@@ -1,0 +1,1060 @@
+---
+title: "3 Skin microbiome overview"
+author: "Alexis Rapin (alexis.rapin@epfl.ch)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+In this notebook, an overview of the skin microbiome characteristics is created.
+
+```{r knitr, echo=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+```{r setup, eval=TRUE, collapse=TRUE}
+notebook.name <- "3-skin_microbiome_overview"
+
+# Load R packages
+suppressMessages(library(here)); packageVersion("here")
+suppressMessages(library(plyr)); packageVersion("plyr")
+suppressMessages(library(tidyverse)); packageVersion("tidyverse")
+suppressMessages(library(ggpubr)); packageVersion("ggpubr")
+suppressMessages(library(cowplot)); packageVersion("cowplot")
+suppressMessages(library(data.table)); packageVersion("data.table")
+suppressMessages(library(ggrepel)); packageVersion("ggrepel")
+suppressMessages(library(vegan)); packageVersion("vegan")
+suppressMessages(library(gtools)); packageVersion("gtools")
+suppressMessages(library(caret)); packageVersion("caret")
+suppressMessages(library(Boruta)); packageVersion("Boruta")
+suppressMessages(library(randomForest)); packageVersion("randomForest")
+suppressMessages(library(ROCR)); packageVersion("ROCR")
+suppressMessages(library(scales)); packageVersion("scales")
+suppressMessages(library(FactoMineR)); packageVersion("FactoMineR")
+suppressMessages(library(factoextra)); packageVersion("factoextra")
+suppressMessages(library(fpc)); packageVersion("fpc")
+suppressMessages(library(pheatmap));
+suppressMessages(library(VennDiagram));
+
+# Load project-specific functions
+source(here::here("lib/lib.R"))
+
+# Load project variables
+load(here::here("etc/project_vars.RData"))
+
+set.seed(seed)
+
+# Set figures theme
+theme_set(theme)
+```
+
+## Show an overview of the skin bacterial community composition and diversity and its evolution during the first year of life
+
+Create a visualization of the general Phylum and Species abundances.
+```{r, eval = F}
+data <- readRDS(here::here("data/data.rds"))
+taxonomy.res <- readRDS(here::here("data/taxonomy_res.rds"))
+mb.counts.filtered.rar <- readRDS(here::here("data/mb_counts_filtered_rar.rds"))
+diversity <- readRDS(here::here("data/diversity.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+
+d <- mb.counts.filtered.rar %>%
+  {
+    sequence <- .$sequence
+    # Add Age labels to read count table
+    select(., -sequence) %>%
+      t %>%
+      as.data.frame %>%
+      dplyr::mutate(SampleID = row.names(.)) %>%
+      inner_join(data %>%
+                   select(Age, SampleID, nnid),
+                 by = "SampleID") %>%
+      
+      # Filter samples with low richness
+      filter(SampleID %in% (outliers %>%
+                              filter(!outlier) %>%
+                              select(SampleID) %>% unlist)) %>%
+      
+      dplyr::group_by(nnid) %>%
+      dplyr::mutate(n.timepoints = n_distinct(Age)) %>%
+      ungroup %>%
+      filter(n.timepoints == 4) %>%
+      # Calculate taxa mean relative abundance at each age
+      dplyr::group_by(Age) %>%
+      dplyr::mutate(n = n_distinct(SampleID)) %>%
+      ungroup %>%
+      arrange(Age) %>%
+      dplyr::mutate(Age = paste0(Age, "\n(n=", n, ")"),
+                    Age = factor(Age, levels = unique(Age))) %>%
+      select(-SampleID, -nnid, -n, -n.timepoints) %>%
+      dplyr::group_by(Age) %>%
+      dplyr::summarise_all(funs(mean)) %>%
+      ungroup %>%
+      column_to_rownames("Age") %>%
+      t %>%
+      as.data.frame %>%
+      dplyr::mutate_all(function(x){
+        return(x*100/sum(x, na.rm = T))
+      }) %>%
+      # Get the max mean relative abundance for each taxa
+      dplyr::mutate(max = apply(., 1, max)) %>%
+      # Add taxonomic annotations
+      cbind(sequence)
+  } %>%
+  left_join(taxonomy.res %>%
+              dplyr::select(sequence, Phylum, Species) %>%
+              dplyr::mutate_all(as.character), by = "sequence") %>%
+  select(-sequence)
+
+taxa.abundance.overview <- d %>%
+  
+  # Group low abundant taxa into "Others"
+  dplyr::mutate(Species = as.character(ifelse(max < 2, "Others", Species))) %>%
+  dplyr::select(-max) %>%
+  melt(vars = C("Phylum", "Species"),
+       variable.name = "Age",
+       value.name = "abundance") %>%
+  # Get the total relative abundance per taxa per age
+  dplyr::group_by(Phylum, Species, Age) %>%
+  dplyr::summarise(s_abundance = sum(abundance)) %>%
+  ungroup %>%
+  # Get the max Species abundance within each Phylum
+  dplyr::group_by(Phylum) %>%
+  dplyr::mutate(max_p_abundance = max(s_abundance)) %>%
+  ungroup %>%
+  # Group low abundant Species into "Others" within each Phylum
+  dplyr::mutate(Phylum = as.character(ifelse(max_p_abundance < 2 ,"Others", Phylum))) %>%
+  dplyr::group_by(Phylum, Species, Age) %>%
+  dplyr::summarise(s_abundance = sum(s_abundance)) %>%
+  ungroup %>%
+  # Get the mean relative abundance per Species across ages
+  dplyr::group_by(Phylum, Species) %>%
+  dplyr::mutate(mean_s_abundance = mean(s_abundance)) %>%
+  ungroup %>%
+  # Get the mean relative abundance per Phylum across ages
+  dplyr::group_by(Phylum) %>%
+  dplyr::mutate(p_abundance = mean(s_abundance)) %>%
+  # For each Specie, give an alpha between 0-1 proportional to its within-Phylum relative abundance
+  dplyr::mutate(alpha = (mean_s_abundance-min(mean_s_abundance))/(max(mean_s_abundance)-min(mean_s_abundance))) %>%
+  # Handle phylum with only one Species
+  dplyr::mutate(alpha = ifelse(is.nan(alpha), 1, alpha)) %>%
+  ungroup %>%
+  # Remove taxonomic level tag from taxonomic annotations
+  dplyr::mutate(Phylum = str_replace(Phylum, "lvl2__", ""),
+                Species = str_replace(Species, "lvl7__", "")) %>%
+  # Sort taxa by relative Phylum and Species abundances across ages
+  dplyr::arrange(p_abundance, -alpha) %>%
+  dplyr::mutate(Age.n = as.numeric(Age),
+                label = factor(paste(Phylum, Species),
+                               levels = unique(paste(Phylum, Species))),
+                Phylum = fct_reorder(Phylum, p_abundance),
+                Species = fct_reorder(Species, mean_s_abundance))
+saveRDS(taxa.abundance.overview,
+        here::here("data/taxa_abundance_overview.rds"))
+```
+```{r, eval = F, echo = F}
+taxa.abundance.overview <- readRDS(here::here("data/taxa_abundance_overview.rds"))
+```
+```{r, eval = F}
+p1 <- taxa.abundance.overview %>%
+  ggplot(aes(x = Age, y = s_abundance,
+             fill = Phylum,
+             group = label,
+             alpha = alpha)) +
+  theme +
+  geom_area(color = "white", size = .25) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_alpha_continuous(range=c(0.5, 1),
+                         guide = "none") +
+  labs(x="Age", y ="Abundance (%)") +
+  geom_text_repel(data = taxa.abundance.overview %>%
+                    group_by(Age) %>%
+                    arrange(-p_abundance, alpha) %>%
+                    dplyr::mutate(y = cumsum(s_abundance)) %>%
+                    ungroup %>%
+                    group_by(Phylum, Species) %>%
+                    filter(s_abundance == max(s_abundance)) %>%
+                    ungroup,
+                  aes(y = y,
+                      label = Species),
+                  color = "black",
+                  alpha = 1,
+                  direction = "y",
+                  hjust = 1,
+                  nudge_x = 0,
+                  segment.size = 0.2,
+                  min.segment.length = 0,
+                  cex = 3) +
+  theme(
+    # panel.border = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+
+p1.name <- paste0(notebook.name, "-taxa_abundance_overview")
+saveRDS(p1, here::here(paste0("figs/", p1.name, ".rds")))
+
+p1.legend <- "Evolution of the relative abundances of Phylum and Species across ages. Phylum are represented in different colors and Species are represented in different shades. Phylum and Species showing a maximal relative abundance lower than 2% across all ages are labeled as Others. The deepest resolved taxonomic classification is included in the label of unresolved Species."
+writeLines(p1.legend, file(here::here(paste0("figs/", p1.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p1.name <- paste0(notebook.name, "-taxa_abundance_overview")
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds")))
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+```
+```{r, eval=T}
+p1
+```
+
+`r p1.legend`
+
+Create a visualization of the general bacterial community diversity across taxonomic levels and ages.
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+diversity <- readRDS(here::here("data/diversity.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r, eval = F}
+d <- diversity %>%
+  left_join(dplyr::select(data, SampleID, nnid, Age), by = "SampleID") %>%
+  
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          dplyr::select(SampleID) %>% unlist)) %>%
+  dplyr::mutate(tax.level = recode_factor(tax.level, Kingdom = "Kingdom",
+                                          Phylum = "Phylum",
+                                          Class = "Class",
+                                          Order = "Order",
+                                          Family = "Family",
+                                          Genus = "Genus",
+                                          Species = "Species",
+                                          ID = "ASV")) %>%
+  dplyr::group_by(nnid) %>%
+  dplyr::mutate(n.timepoints = n_distinct(Age)) %>%
+  ungroup %>%
+  filter(n.timepoints == 4) %>%
+  dplyr::group_by(Age) %>%
+  dplyr::mutate(n = n_distinct(SampleID)) %>%
+  ungroup %>%
+  arrange(Age) %>%
+  dplyr::mutate(Age = paste0(Age, "\n(n=", n, ")"),
+                Age = factor(Age, levels = unique(Age))) %>%
+  dplyr::select(Age,
+                tax.level,
+                Richness = richness,
+                SDI = shannon) %>%
+  melt() %>%
+  filter(tax.level != "Kingdom")
+
+p2 <- d %>%
+  ggplot(aes(x = Age, y = value, fill = tax.level)) +
+  facet_wrap(~variable, ncol = 1, scales = "free_y", strip.position = "right") +
+  geom_point(size = 0.5, alpha = 0.5,
+             position = position_jitterdodge(jitter.width = 0.2)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.75) +
+  scale_fill_brewer(palette = "PiYG") +
+  labs(y = "Value", fill = "Taxonomic level")
+
+p2.name <- paste0(notebook.name, "-diversity_overview")
+saveRDS(p2, here::here(paste0("figs/", p2.name, ".rds")))
+
+p2.legend <- "Bacterial community diversity represented in term of richness and Shannon diversity index (SDI) across ages and taxonomic levels."
+writeLines(p2.legend, file(here::here(paste0("figs/", p2.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p2.name <- paste0(notebook.name, "-diversity_overview")
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds")))
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+```
+```{r, eval=T}
+p2
+```
+
+`r p2.legend`
+
+Assess sequencing depth using rarefaction curves
+```{r, eval = F, echo = F}
+mb.counts.filtered <- readRDS(here::here("data/mb_counts_filtered.rds"))
+```
+```{r, eval = F}
+rarefaction.richness <- seq.int(from = 100, to = seq.depth.thres, length.out = 50) %>%
+  round() %>%
+  lapply(function(x){
+    mb.counts.filtered %>%
+      dplyr::select(-sequence) %>%
+      t %>%
+      rrarefy(x) %>%
+      {rowSums(. != 0)} %>%
+      t %>%
+      as.data.frame %>%
+      dplyr::mutate(depth = x)
+  }) %>%
+  bind_rows()
+
+saveRDS(rarefaction.richness, here::here("data/rarefaction_richness.rds"))
+```
+```{r, eval = F, echo = F}
+rarefaction.richness <- readRDS(here::here("data/rarefaction_richness.rds"))
+```
+```{r, eval = F}
+p7 <- rarefaction.richness %>%
+  melt(id.vars = c("depth")) %>%
+  left_join(data %>%
+              dplyr::select(variable = SampleID, Age),
+            by = "variable") %>%
+  dplyr::group_by(depth, Age) %>%
+  dplyr::mutate(mean = mean(value),
+                upper = quantile(value)["75%"],
+                lower = quantile(value)["25%"]) %>%
+  ggplot(aes(x = depth, y = mean, ymin = lower, ymax = upper, group = Age)) +
+  geom_ribbon(aes(fill = Age), alpha = 0.2) +
+  geom_line(aes(color = Age), size = 1) +
+  labs(x = "Reads sampling depth", y = "Observed ASVs")
+p7.name <- paste0(notebook.name, "-rarefaction_curves")
+saveRDS(p7, here::here(paste0("figs/", p7.name, ".rds")))
+
+p7.legend <- "Rarefaction curves showing the number of observed bacterial 16S rRNA gene amplicon sequence variants (ASVs) across multiple reads sampling depth. Curves represent the mean values for microbiome samples collected at different ages. The transparent ribbons represent the interval between the lower and upper quartiles."
+writeLines(p7.legend, file(here::here(paste0("figs/", p7.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p7.name <- paste0(notebook.name, "-rarefaction_curves")
+p7 <- readRDS(here::here(paste0("figs/", p7.name, ".rds")))
+p7.legend <- readLines(here::here(paste0("figs/", p7.name, ".txt")))
+```
+```{r, eval=T}
+p7
+```
+
+`r p7.legend`
+
+## Highlight inter-individual and temporal variations
+
+Highlight temporal variations in bacterial community diversity at the species level.
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+diversity <- readRDS(here::here("data/diversity.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r, eval = F}
+d <- diversity %>%
+  left_join(dplyr::select(data, SampleID, nnid, Age), by = "SampleID") %>%
+  
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          select(SampleID) %>% unlist)) %>%
+  dplyr::mutate(tax.level = recode_factor(tax.level, Kingdom = "Kingdom",
+                                          Phylum = "Phylum",
+                                          Class = "Class",
+                                          Order = "Order",
+                                          Family = "Family",
+                                          Genus = "Genus",
+                                          Species = "Species",
+                                          ID = "ASV")) %>%
+  dplyr::select(nnid, Age,
+                tax.level,
+                Richness = richness,
+                SDI = shannon) %>%
+  melt() %>%
+  filter(tax.level == "ASV") %>%
+  dplyr::group_by(nnid, variable) %>%
+  dplyr::mutate(n.long.samples = n_distinct(Age)) %>%
+  ungroup %>%
+  arrange(variable, Age, nnid)
+
+p3 <- lapply(levels(d$variable), function(x){
+  d %>%
+    filter(variable == x,
+           n.long.samples == 4) %>%
+    {
+      ggplot(., aes(x = Age, y = value)) +
+        # geom_line(aes(group = nnid)) +
+        geom_jitter(size = 0.5, alpha = 0.5) +
+        geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), alpha = 0.75) +
+        labs(y = "Value") +
+        stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(.$Age),
+                                                                  m = 2), 2), as.vector),
+                           label = "p.signif",
+                           method = "wilcox",
+                           paired = T,
+                           p.adjust.method = "BH") +
+        # stat_compare_means(label = "p.format",
+        #                    label.y = 0) +
+        labs(y = x)
+    }
+}) %>%
+  `names<-`(levels(d$variable))
+
+p3.name <- paste0(notebook.name, "-species_diversity_temporal_variation")
+saveRDS(p3, here::here(paste0("figs/", p3.name, ".rds")))
+
+n <- d %>% select(nnid, n.long.samples) %>%
+  filter(n.long.samples == 4) %>%
+  {.[!duplicated(.), ]} %>%
+  nrow
+
+p3.legend <- paste0("Bacterial community diversity represented in term of ASV richness and Shannon diversity index (SDI) across ages. Only full longitudinal sample sets are included (n=", n, "). Statistical significance assessed with paired Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001")
+writeLines(p3.legend, file(here::here(paste0("figs/", p3.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p3.name <- paste0(notebook.name, "-species_diversity_temporal_variation")
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds")))
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+```
+```{r, eval=T}
+p3
+```
+
+`r p3.legend`
+
+## dimensionality reduction
+
+Highlight temporal variations using dimensionality reduction.
+Use NMDS and PCoA on Bray-Curtis dissimilarity and Jaccard distance.
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r, eval = F}
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  `row.names<-`(.$taxonomy) %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(outliers %>%
+                         filter(!outlier) %>%
+                         dplyr::select(SampleID) %>%
+                         unlist %>%
+                         as.character)) %>%
+  filter(rowSums(.) != 0) %>%
+  {
+    s <- data %>%
+      select(SampleID, nnid, Age) %>%
+      dplyr::group_by(nnid) %>%
+      dplyr::mutate(n.timepoints = n_distinct(Age)) %>%
+      ungroup %>%
+      filter(n.timepoints == 4)
+    
+    dplyr::select(., one_of(as.character(s$SampleID)))
+  }
+
+
+dim.red <- list(
+  # Non-metric Multidimensional Scaling
+  NMDS = metaMDS(t(d)) %>%
+    scores("site") %>%
+    as.data.frame %>%
+    dplyr::mutate(SampleID = row.names(.)),
+  # Principal Coordinates Analysis based on Bray-Curtis dissimilarity
+  PCoA.bray = t(d) %>%
+    vegdist(method = "bray") %>%
+    cmdscale() %>%
+    as.data.frame %>%
+    `names<-`(c("Dim1", "Dim2")) %>%
+    dplyr::mutate(SampleID = names(d)),
+  # Principal Coordinates Analysis based on Jaccard distance
+  PCoA.jaccard = t(d) %>%
+    vegdist(method = "jaccard") %>%
+    cmdscale() %>%
+    as.data.frame %>%
+    `names<-`(c("Dim1", "Dim2")) %>%
+    dplyr::mutate(SampleID = names(d))
+)
+
+saveRDS(dim.red, here::here("data/dimred.rds"))
+```
+```{r, eval = F, echo = F}
+dim.red <- readRDS(here::here("data/dimred.rds"))
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval = F}
+p4 <- dim.red$NMDS %>%
+  inner_join(data %>%
+               dplyr::select(SampleID, Age),
+             by = "SampleID") %>%
+  ggplot(aes(x = -NMDS1, y = NMDS2, color = Age)) +
+  theme +
+  geom_hline(yintercept = 0, lwd = 0.75, color = "darkgrey") +
+  geom_vline(xintercept = 0, lwd = 0.75, color = "darkgrey") +
+  geom_point(size = 1.2, alpha=0.5) +
+  stat_ellipse(lwd = 0.75)
+
+p4.name <- paste0(notebook.name, "-samples_NMDS")
+saveRDS(p4, here::here(paste0("figs/", p4.name, ".rds")))
+
+p4.legend <- "Non-metric Multidimensional Scaling (NMDS) of skin microbiome samples based on bacterial composition at the ASV level. 95% data ellipses are shown for each age."
+writeLines(p4.legend, file(here::here(paste0("figs/", p4.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p4.name <- paste0(notebook.name, "-samples_NMDS")
+p4 <- readRDS(here::here(paste0("figs/", p4.name, ".rds")))
+p4.legend <- readLines(here::here(paste0("figs/", p4.name, ".txt")))
+```
+```{r, eval=T}
+p4
+```
+
+`r p4.legend`
+
+```{r, eval = F, echo = F}
+dim.red <- readRDS(here::here("data/dimred.rds"))
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval = F}
+p5 <- dim.red$PCoA.bray %>%
+  inner_join(data %>%
+               dplyr::select(SampleID, Age),
+             by = "SampleID") %>%
+  ggplot(aes(x = -Dim1, y = Dim2, color = Age)) +
+  geom_hline(yintercept = 0, lwd = 0.75, color = "darkgrey") +
+  geom_vline(xintercept = 0, lwd = 0.75, color = "darkgrey") +
+  geom_point(size = 1.2, alpha=0.5) +
+  stat_ellipse(lwd = 0.75)
+
+p5.name <- paste0(notebook.name, "-samples_PCoA_bray")
+saveRDS(p5, here::here(paste0("figs/", p5.name, ".rds")))
+
+p5.legend <- "Principal Coordinates Analysis (PCoA) of skin microbiome samples based on the Bray-Curtis dissimilarity between samples bacterial composition at the species level."
+writeLines(p5.legend, file(here::here(paste0("figs/", p5.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p5.name <- paste0(notebook.name, "-samples_PCoA_bray")
+p5 <- readRDS(here::here(paste0("figs/", p5.name, ".rds")))
+p5.legend <- readLines(here::here(paste0("figs/", p5.name, ".txt")))
+```
+```{r, eval=T}
+p5
+```
+
+`r p5.legend`
+
+```{r, eval = F, echo = F}
+dim.red <- readRDS(here::here("data/dimred.rds"))
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval = F}
+p6 <- dim.red$PCoA.jaccard %>%
+  inner_join(data %>%
+               dplyr::select(SampleID, Age),
+             by = "SampleID") %>%
+  ggplot(aes(x = Dim1, y = Dim2, color = Age)) +
+  geom_hline(yintercept = 0, lwd = 0.75, color = "darkgrey") +
+  geom_vline(xintercept = 0, lwd = 0.75, color = "darkgrey") +
+  geom_point(size = 1.2, alpha=0.5) +
+  stat_ellipse(lwd = 0.75)
+
+p6.name <- paste0(notebook.name, "-samples_PCoA_jaccard")
+saveRDS(p6, here::here(paste0("figs/", p6.name, ".rds")))
+
+p6.legend <- "Principal Coordinates Analysis (PCoA) of skin microbiome samples based on the Jaccard distance between samples bacterial composition at the species level."
+writeLines(p6.legend, file(here::here(paste0("figs/", p6.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p6.name <- paste0(notebook.name, "-samples_PCoA_jaccard")
+p6 <- readRDS(here::here(paste0("figs/", p6.name, ".rds")))
+p6.legend <- readLines(here::here(paste0("figs/", p6.name, ".txt")))
+```
+```{r, eval=T}
+p6
+```
+
+`r p6.legend`
+
+Compare inter and within-age variations
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r inter_vs_within_age_variations, eval=F}
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  `row.names<-`(.$taxonomy) %>%
+  # Remove samples with low richness
+  select(one_of(outliers %>%
+                  filter(!outlier) %>%
+                  dplyr::select(SampleID) %>%
+                  unlist %>%
+                  as.character)) %>%
+  filter(rowSums(.) != 0)
+
+dist.within.age <- lapply(levels(data$Age), function(x){
+  d %>%
+    dplyr::select(one_of(data %>%
+                           filter(Age == x) %>%
+                           dplyr::select(SampleID) %>%
+                           unlist %>%
+                           as.character)) %>%
+    t %>%
+    vegdist(method = "bray") %>%
+    as.matrix %>%
+    as.data.frame() %>%
+    dplyr::mutate(SampleID.1 = row.names(.)) %>%
+    gather(SampleID.2, value, -SampleID.1) %>%
+    filter(value != 0) %>%
+    dplyr::group_by(SampleID.1) %>%
+    dplyr::summarise(value = mean(value, na.rm = T)) %>%
+    ungroup %>%
+    dplyr::mutate(group = "Within age",
+                  Age = x)
+}) %>%
+  bind_rows
+
+d1 <- data %>%
+  dplyr::select(SampleID, Age, nnid)
+
+dist.between.age <- lapply(2:length(levels(d1$Age)), function(i){
+  age.1 <- levels(d1$Age)[i-1]
+  age.2 <- levels(d1$Age)[i]
+  SampleID <- lapply(c(age.1, age.2), function(x){
+    d1 %>%
+      filter(Age == x) %>%
+      dplyr::select(SampleID) %>%
+      unlist %>%
+      as.character
+  })
+  d %>%
+    select(one_of(d1 %>%
+                    filter(Age %in% c(age.1, age.2)) %>%
+                    dplyr::select(SampleID) %>%
+                    unlist %>%
+                    as.character)) %>%
+    t %>%
+    vegdist(method = "bray") %>%
+    as.matrix %>%
+    {.[row.names(.) %in% SampleID[[1]],
+       colnames(.) %in% SampleID[[2]]]} %>%
+    as.data.frame() %>%
+    dplyr::mutate(SampleID.1 = row.names(.)) %>%
+    gather(SampleID.2, value, -SampleID.1) %>%
+    left_join(dplyr::select(d1, nnid.1 = nnid,
+                            SampleID.1 = SampleID,
+                            Age.1 = Age),
+              by = "SampleID.1") %>%
+    left_join(dplyr::select(d1, nnid.2 = nnid,
+                            SampleID.2 = SampleID,
+                            Age.2 = Age),
+              by = "SampleID.2") %>%
+    filter(nnid.1 == nnid.2) %>%
+    dplyr::mutate(Age = paste0(Age.1, " - ", Age.2),
+                  group = "Between ages") %>%
+    dplyr::select(SampleID.1, SampleID.2,
+                  value, Age, group)
+}) %>%
+  bind_rows
+
+p <- bind_rows(dist.within.age,
+               dplyr::select(dist.between.age, -SampleID.2)) %>%
+  dplyr::mutate(Age = factor(Age, levels = c("Day 1",
+                                             "Day 1 - 3 months",
+                                             "3 months",
+                                             "3 months - 6 months",
+                                             "6 months",
+                                             "6 months - 12 months",
+                                             "12 months"))) %>%
+  {
+    ggplot(., aes(x = Age, y = value, fill = group)) +
+      geom_jitter(size = 0.5, alpha = 0.5) +
+      # geom_boxplot(alpha = 0.75) +
+      geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), alpha = 0.75) +
+      labs(y = "Bray-Curtis diss.") +
+      geom_point(data = dplyr::group_by(., Age, group) %>%
+                   dplyr::summarize(value = mean(value)) %>%
+                   ungroup,
+                 aes(pch = group), size = 3) +
+      geom_line(data = dplyr::group_by(., Age, group) %>%
+                  dplyr::summarize(value = mean(value)) %>%
+                  ungroup,
+                aes(group = group),
+                size = 1)
+  }
+
+p.name <- "3-skin_microbiome_overview-within_vs_between_age_variation"
+
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Mean within-age variations and individual between-ages variations assessed by the Bray-Curtis dissimilarity. Violin shown with distribution quartiles. Lines show mean values."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "3-skin_microbiome_overview-within_vs_between_age_variation"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, "_legend.txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+Highlight temporal variations using multivariate statistics
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r perMANOVA, eval = F}
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  `row.names<-`(.$taxonomy) %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(outliers %>%
+                         filter(!outlier) %>%
+                         dplyr::select(SampleID) %>%
+                         unlist %>%
+                         as.character)) %>%
+  filter(rowSums(.) != 0) %>%
+  {
+    m <- .
+    t(m) %>%
+      as.data.frame %>%
+      `row.names<-`(names(m))
+  } %>%
+  dplyr::mutate(SampleID = row.names(.)) %>%
+  inner_join(data %>%
+               dplyr::select(SampleID, Age, nnid),
+             by = "SampleID") %>%
+  dplyr::group_by(nnid) %>%
+  dplyr::mutate(n.timepoints = n_distinct(Age)) %>%
+  ungroup
+
+# Select only subjects with samples available across all time points
+values <- filter(d, n.timepoints == 4) %>%
+  dplyr::select(-Age, -SampleID, -nnid, -n.timepoints) %>%
+  dplyr::select(one_of(names(.)[colSums(.) != 0]))
+labels <- filter(d, n.timepoints == 4) %>%
+  dplyr::select(Age, nnid)
+# PerMANOVA to test the effect of age while controlling for inter-individual variations
+adonis.out.age <- adonis(values ~ Age,
+                         data = labels,
+                         method = "bray",
+                         strata = labels$nnid,
+                         permutations = 999)
+
+saveRDS(adonis.out.age, here::here("data/adonis_out_age.rds"))
+
+t1 <- adonis.out.age$aov.tab %>%
+  as.data.frame %>%
+  dplyr::mutate(Term = row.names(.),
+                SumsOfSqs = round(SumsOfSqs, digits = 2),
+                MeanSqs = round(MeanSqs, digits = 2),
+                F.Model = round(F.Model, digits = 2),
+                R2 = round(R2, digits = 2),
+                Sig = stars.pval(`Pr(>F)`)) %>%
+  dplyr::select(Term, Df, SumsOfSqs, MeanSqs, F.Model, R2, `Pr(>F)`, Sig)
+
+t1.name <- paste0(notebook.name, "-age_perMANOVA")
+saveRDS(t1, here::here(paste0("figs/", t1.name, ".rds")))
+
+n <- d %>% select(nnid, n.timepoints) %>%
+  filter(n.timepoints == 4) %>%
+  {.[!duplicated(.), ]} %>%
+  nrow
+
+t1.legend <- paste0("The skin bacterial community composition changes with age. Permutational Multivariate Analysis of Variance (perMANOVA) based on the Bray-Curtis dissimilarity between samples bacterial composition at the species level. Only full longitudinal sample sets included (n=", n, "). Permutations constrained within subjects.")
+writeLines(t1.legend, file(here::here(paste0("figs/", t1.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+t1.name <- paste0(notebook.name, "-age_perMANOVA")
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds")))
+t1.legend <- readLines(here::here(paste0("figs/", t1.name, ".txt")))
+```
+```{r, eval=T}
+t1
+```
+
+`r t1.legend`
+
+Highlight temporal variations using ML
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r RF, eval = F}
+#Focus on ASV-level data
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  `row.names<-`(.$taxonomy) %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(outliers %>%
+                         filter(!outlier) %>%
+                         dplyr::select(SampleID) %>%
+                         unlist %>%
+                         as.character)) %>%
+  {
+    rowsums <- rowSums(.)
+    m <- dplyr::mutate(., taxonomy = row.names(.)) %>%
+      filter(rowsums != 0) %>%
+      `row.names<-`(.$taxonomy) %>%
+      dplyr::select(-taxonomy)
+    
+    t(m) %>%
+      as.data.frame %>%
+      `row.names<-`(names(m)) %>%
+      `names<-`(row.names(m))
+  } %>%
+  dplyr::mutate(SampleID = row.names(.)) %>%
+  inner_join(data %>%
+               dplyr::select(SampleID, Age),
+             by = "SampleID")
+
+# Split the data into train (60%) and test (40%) sets
+i.train <- createDataPartition(y = d$Age,
+                               p = 0.6, list = FALSE)
+d.sets <- d %>% dplyr::select(-SampleID) %>%
+  {
+    list(train.set = .[i.train, ],
+         test.set = .[-i.train, ])
+  }
+
+# Select features using a Random Forest
+rf.age.fs <- Boruta(Age ~ ., data = d.sets$train.set, doTrace = 2)
+saveRDS(rf.age.fs, here::here("data/rf_age_fs.rds"))
+
+d.sets.selected <- d.sets %>%
+  lapply(function(x){
+    x %>%
+      dplyr::select(one_of(c("Age", getSelectedAttributes(rf.age.fs) %>%
+                               str_remove_all("`"))))
+  })
+
+rf.age.selected.features <- d %>%
+  dplyr::select(one_of(c("Age", "SampleID", getSelectedAttributes(rf.age.fs) %>%
+                           str_remove_all("`"))))
+saveRDS(rf.age.selected.features, here::here("data/rf_age_selected_features.rds"))
+
+# Train a RF model using selected features with 10-folds cross-validation
+k <- 10
+cv <- trainControl(index = createFolds(d.sets.selected$train.set$Age, k = k),
+                   method = "cv", number = k)
+rf.age.fit <- train(Age ~ ., data = d.sets.selected$train.set, method = "rf",
+                    trControl = cv, proximity = TRUE)
+saveRDS(rf.age.fit, here::here("data/rf_age_fit.rds"))
+
+rf.age.pred <- predict(rf.age.fit, newdata = d.sets$test.set)
+rf.age.pred.prob <- predict(rf.age.fit, newdata = d.sets$test.set,
+                            type="prob")
+
+# ROC analysis
+rf.age.roc <- lapply(unique(d$Age), function(x){
+  true.val <- as.numeric(d.sets$test.set$Age == x)
+  pred <- prediction(rf.age.pred.prob[, x], true.val)
+  perf <- performance(pred, "tpr", "fpr")
+  data.frame(Class = rep(x, length(unlist(perf@x.values))),
+             FPR = unlist(perf@x.values),
+             TPR = unlist(perf@y.values),
+             AUC = rep(unlist(performance(pred, measure = "auc")@y.values),
+                       length(unlist(perf@x.values)))) %>%
+    return
+}) %>%
+  bind_rows %>%
+  dplyr::mutate(AUC = as.factor(round(AUC, digits = 2)))
+
+saveRDS(rf.age.roc, here::here(paste0("data/rf_age_roc.rds")))
+```
+```{r, eval=F, echo=F}
+rf.age.roc <- readRDS(here::here(paste0("data/rf_age_roc.rds")))
+```
+```{r, eval=F}
+p8 <- rf.age.roc %>%
+      ggplot(aes(x = FPR, y = TPR, color = Class)) +
+      geom_step(size=1) +
+      geom_abline(slope=1, intercept = 0, lty=2, col="grey") +
+      labs(color="Age")
+
+p8.name <- paste0(notebook.name, "-rf_age_roc")
+saveRDS(p8, here::here(paste0("figs/", p8.name, ".rds")))
+
+p8.legend <- "Receiver Operating Characteristic Curve (ROC) for a Random Forest (RF) model predicting skin microbiome sample collection time points from the skin bacterial composition."
+writeLines(p8.legend, file(here::here(paste0("figs/", p8.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p8.name <- paste0(notebook.name, "-rf_age_roc")
+p8 <- readRDS(here::here(paste0("figs/", p8.name, ".rds")))
+p8.legend <- readLines(here::here(paste0("figs/", p8.name, ".txt")))
+```
+```{r, eval=T}
+p8
+```
+
+`r p8.legend`
+
+```{r, eval=F, echo=F}
+rf.age.roc <- readRDS(here::here(paste0("data/rf_age_roc.rds")))
+```
+```{r, eval=F}
+t2 <- rf.age.roc %>%
+  dplyr::select(Class, AUC) %>%
+  unique %>%
+  dplyr::arrange(Class)
+
+t2.name <- paste0(notebook.name, "-rf_age_roc_auc")
+saveRDS(t2, here::here(paste0("figs/", t2.name, ".rds")))
+
+t2.legend <- "Area Under the Curve (AUC) for the ROC analysis."
+writeLines(t2.legend, file(here::here(paste0("figs/", t2.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+t2.name <- paste0(notebook.name, "-rf_age_roc_auc")
+t2 <- readRDS(here::here(paste0("figs/", t2.name, ".rds")))
+t2.legend <- readLines(here::here(paste0("figs/", t2.name, ".txt")))
+```
+```{r, eval=T}
+t2
+```
+
+`r t2.legend`
+
+```{r, eval = F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+rf.age.selected.features <- readRDS(here::here("data/rf_age_selected_features.rds"))
+rf.age.fit <- readRDS(here::here("data/rf_age_fit.rds"))
+```
+```{r importance_heatmap, eval = F}
+# Highlight important features on a heatmap
+rf.importance <- rf.age.fit %>%
+  varImp() %>%
+  {.$importance} %>%
+  dplyr::mutate(ID = row.names(.) %>%
+                  str_remove_all("`")) %>%
+  dplyr::arrange(-Overall) %>%
+  # Ignore chloroplasts and identified contaminants
+  filter(!str_detect(ID, "Chloroplast"),
+         !str_detect(ID, "Burkholder"))
+
+top.n.important <- 30
+d <- rf.age.selected.features %>%
+  # Select top n important features
+  dplyr::select(one_of("Age", "SampleID", rf.importance$ID[1:top.n.important]))
+
+p.name <- paste0(notebook.name, "-rf_age_selected_species_hm")
+
+annotation.col <- d %>%
+  dplyr::select(SampleID, Age) %>%
+  unique %>%
+  `row.names<-`(.$SampleID) %>%
+  dplyr::select(-SampleID)
+
+p <- d %>%
+  `row.names<-`(.$SampleID) %>%
+  dplyr::select(-Age, -SampleID) %>%
+  as.matrix %>%
+  {
+    rn <- row.names(.)
+    cn <- colnames(.)
+    t(.) %>%
+      apply(., 2, scale, center = F) %>%
+      `colnames<-`(rn) %>%
+      `row.names<-`(cn)
+  } %>%
+  {sign(.)*log2(abs(.) + 1)} %>%
+  pheatmap(
+    # filename = here::here(paste0("figs/", p.name, ".pdf")),
+    treeheight_row = 10,
+    treeheight_col = 10,
+    show_colnames = F,
+    cutree_cols = 4,
+    cutree_rows = 10,
+    clustering_method = "ward.D2",
+    height = 0.8 + 0.138*nrow(.),
+    width = fig.layout$height.max/25.4,
+    annotation_col = annotation.col,
+    silent = T) %>%
+  {.[[4]]}
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- paste0("Skin bacterial taxa associated with age. Only top ", top.n.important, " taxa selected by a Random Forest (RF) approach are displayed. Color intensities represent rarefied, standardized, scaled and log-transformed read counts.")
+
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+p.name <- "3-skin_microbiome_overview-rf_age_selected_species_hm"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval=T}
+plot(p)
+```
+
+`r p.legend`
+
+
+### Plot a simple Venn diagram for commonalities/differences between ages
+
+```{r, eval=F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+```
+```{r age_venn, eval=F}
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  dplyr::select(one_of(c("taxonomy",
+                         outliers %>%
+                           filter(!outlier) %>%
+                           dplyr::select(SampleID) %>%
+                           unlist %>%
+                           as.character))) %>%
+  `row.names<-`(.$taxonomy) %>%
+  dplyr::select(-taxonomy) %>%
+  t %>%
+  as.data.frame %>%
+  dplyr::mutate(SampleID = row.names(.)) %>%
+  left_join(data %>%
+              dplyr::select(SampleID, Age, nnid),
+            by = "SampleID") %>%
+  gather("Taxa", "value", -SampleID, -Age ,-nnid) %>%
+  dplyr::group_by(nnid) %>%
+  dplyr::mutate(n.timepoints = n_distinct(Age)) %>%
+  ungroup %>%
+  filter(n.timepoints == 4) %>%
+  dplyr::select(Age, Taxa, value) %>%
+  filter(value > 0) %>%
+  dplyr::select(-value) %>%
+  unique %>%
+  dplyr::mutate(Age = factor(Age,
+                             levels = c("Day 1", "12 months", "3 months", "6 months"))) %>%
+  split(.$Age) %>%
+  lapply(function(x){unlist(x$Taxa)})
+
+p.name <- "3-skin_microbiome_overview-age_venn"
+
+for(imagetype in c("svg", "png")){
+  
+  venn.diagram(x = d,
+               filename = here::here(paste0("figs/", p.name, ".", imagetype)),
+               category.names = names(d),
+               imagetype = imagetype,
+               compression = "lzw",
+               lwd = 1,
+               height = 0.25*fig.layout$width.single,
+               width = 0.25*fig.layout$width.single,
+               units = "mm",
+               resolution = 300,
+               main.fontfamily = "sans",
+               sub.fontfamily = "sans",
+               fontfamily = "sans",
+               cex = 0.5,
+               cat.cex = 0.5,
+               cat.default.pos = "outer",
+               main = paste("Total ", unlist(d) %>%
+                              unique %>%
+                              length)
+  )
+}
+
+for(n in names(d)){
+  write.csv(d[[n]], here::here(paste0("figs/figures/taxa_sets_", n, ".csv")),
+            row.names = F)
+}
+
+p.legend <- "Number of taxa observed observed at different ages."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+
+```
+## Session info
+```{r, eval = T}
+sessionInfo()
+```

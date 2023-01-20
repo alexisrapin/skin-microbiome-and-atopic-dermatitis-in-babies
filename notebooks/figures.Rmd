@@ -1,0 +1,1625 @@
+---
+title: "Figures"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+## Description
+
+In this notebook, figures are compiled and exported.
+
+```{r knitr, echo=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+```{r setup, eval=TRUE, collapse=TRUE}
+notebook.name <- "figures"
+
+# Load R packages
+suppressMessages(library(here)); packageVersion("here")
+suppressMessages(library(tidyverse)); packageVersion("tidyverse")
+suppressMessages(library(ggpubr)); packageVersion("ggpubr")
+suppressMessages(library(cowplot)); packageVersion("cowplot")
+suppressMessages(library(gridExtra)); packageVersion("gridExtra")
+suppressMessages(library(svglite))
+suppressMessages(library(ggplotify))
+
+
+# Load project-specific functions
+source(here::here("lib/lib.R"))
+
+# Load project variables
+load(here::here("etc/project_vars.RData"))
+
+set.seed(seed)
+
+# Set figures theme
+theme_set(theme)
+```
+
+## Main figures
+
+### Overview of the skin bacterial community composition
+```{r Fig2_microbiome_overview, eval = T}
+p1.name <- "3-skin_microbiome_overview-taxa_abundance_overview"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(plot.margin = unit(c(2, 2, -4, 2), "mm"),
+        axis.title.x = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+p2.name <- "3-skin_microbiome_overview-age_venn"
+p2 <- NULL
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+
+p3.name <- "3-skin_microbiome_overview-samples_NMDS"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds"))) +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+
+p4.name <- "3-skin_microbiome_overview-species_diversity_temporal_variation"
+p4 <- readRDS(here::here(paste0("figs/", p4.name, ".rds")))$SDI +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p4.legend <- "Bacterial species diversity represented in term of Shannon diversity index across ages. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001."
+
+p5.name <- "5-targeted_analysis-age_associated_taxa"
+p5 <- readRDS(here::here(paste0("figs/", p5.name, ".rds"))) +
+  theme(strip.background = element_blank(),
+        panel.spacing = unit(1, "mm"),
+        plot.margin = unit(c(2, 2, 2, 2), "mm"),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off") +
+  facet_wrap(~Taxa, nrow = 1, dir = "v")
+p5.legend <- readLines(here::here(paste0("figs/", p5.name, ".txt")))
+
+fig.name <- "Fig2_microbiome_overview"
+
+fig.legend <- paste("Overview of the evolution of the skin bacterial community composition during the first year of life.",
+                    "(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend,
+                    "(D)", p4.legend,
+                    "(E)", p5.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1,
+                 plot_grid(p2, p3, p4,
+                           nrow = 1,
+                           rel_widths = c(0.65, 1.1, 0.5),
+                           align = "h",
+                           axis = "tb",
+                           labels = c("(B)", "(C)", "(D)")),
+                 p5,
+                 nrow = 3,
+                 rel_heights = c(0.8, 1.1, 0.9),
+                 labels = c("(A)", "", "(E)"))
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 0.9*fig.layout$width.double,
+         unit = "mm")
+}
+
+for(f in c("svg", "png")) {
+  file.copy(here::here("figs", paste0(p2.name, ".", f)),
+            here::here("figs/figures", paste0(fig.name, "_B.", f)),
+            overwrite = T)
+}
+fig
+```
+
+`r fig.legend`
+
+### Summary table of evidences for associations between skin microbiome and investigation variables
+
+```{r Table2_evidences_summary, eval = T}
+# t1.name <- "4_2-associations-vars_perMANOVA"
+t1.name <- "4_2-associations-vars_all_perMANOVA"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds"))) %>%
+  separate(Term, into = c("Variable", "Interaction"), sep = ":") %>%
+  filter(is.na(Interaction),
+         `Pr(>F)` <= 0.05) %>%
+  left_join(inv.vars %>%
+              dplyr::select(Factor, Variable, Name)) %>%
+  arrange(Age, `Pr(>F)`) %>%
+  mutate(Sig = as.character(Sig)) %>%
+  dplyr::select(Age, Factor, Variable, Name, perMANOVA = Sig) %>%
+  left_join(readRDS(here::here("data/selected_diversity_data.rds")) %>%
+              dplyr::select(Age, Variable, Diversity, p.value) %>%
+              {.[!duplicated(.), ]} %>%
+              mutate(p.value = symnum(p.value,
+                                      corr = F, na = F,
+                                      cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+                                      symbols = c("****", "***", "**", "*", "ns")) %>% as.character) %>%
+              spread(Diversity, p.value)) %>%
+  left_join(readRDS(here::here("data/selected_tewl_data.rds")) %>%
+              dplyr::select(Age, Variable, p.value) %>%
+              {.[!duplicated(.), ]} %>%
+              mutate(TEWL = symnum(p.value,
+                                   corr = F, na = F,
+                                   cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+                                   symbols = c("****", "***", "**", "*", "ns")) %>% as.character) %>%
+              dplyr::select(-p.value)) %>%
+  left_join(readRDS(here::here("data/splsda_output_data_summary.rds")) %>%
+              mutate(Age = recode_factor(Age, day.1 = "Day 1",
+                                         month.3 = "3 months",
+                                         month.6 = "6 months",
+                                         month.12 = "12 months")) %>%
+              dplyr::select(Age, Variable,
+                            `Associated taxa` = step2.n.selected.taxa)) %>%
+  mutate(`Associated taxa` = replace_na(`Associated taxa`, 0)) %>%
+  dplyr::select(Age, Factor, Variable = Name,
+                perMANOVA, SDI, Richness, TEWL, `Associated taxa`)
+
+t1.legend <- "Summary of evidences for associations between skin bacterial community and investigation variables."
+
+fig.name <- "Table2_evidences_summary"
+
+t1 %>%
+  write.csv(here::here(paste0("figs/figures/", fig.name, ".csv")),
+            row.names = F)
+
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+t1
+```
+
+
+### Associations between skin bacteria and investigation variables
+
+```{r Fig3_investigation_variables_associations_1, eval = T}
+p1.name <- "4_2-associations-permanova_variance_explained_barplot"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds")))
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, "_legend.txt")))
+
+p2.name <- "4_2-associations-diversity_vars_filtered"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(strip.background = element_blank(),
+        panel.spacing = unit(1, "mm"),
+        plot.margin = unit(c(2, 2, 5, 8), "mm"),
+        axis.title.y = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, "_legend.txt")))
+
+p3.name <- "4_2-associations-selected_taxa_abundance"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds"))) +
+  coord_cartesian(clip = "off")
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, "_legend.txt")))
+
+fig.name <- "Fig3_investigation_variables_associations_1"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(plot_grid(p1, p2,
+                           nrow = 1,
+                           rel_widths = c(1, 2.5),
+                           labels = c("(A)", "(B)")),
+                 p3,
+                 ncol = 1,
+                 rel_heights = c(0.8, 1.5),
+                 labels = c("", "(C)"))
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = 0.95*fig.layout$width.double,
+         height = 1.25*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+### General overview of the impact of delivery mode
+```{r Fig4_delivery_mode, eval = T}
+
+p1.name <- "5-targeted_analysis-cca_age"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+p2.name <- "5-targeted_analysis-maturation_delivery_mode_regressions"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.position = "none") +
+  coord_cartesian(clip = "off")
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+
+p3.name <- "5-targeted_analysis-delivery_mode_diversity"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds")))$SDI +
+  theme(legend.position = "none",
+        strip.background = element_blank(),
+        panel.background = element_blank(),
+        panel.spacing = unit(1, "mm"),
+        plot.margin = unit(c(2, 4, 2, 2), "mm"),
+        plot.background = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank()) +
+  coord_cartesian(clip = "off")
+p3.legend <- "Skin bacterial diversity across age and different delivery modes shown as the Shannon diversity index (SDI). Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+
+p4.name <- "5-targeted_analysis-tewl_vs_delivery_mode"
+p4 <- readRDS(here::here(paste0("figs/", p4.name, ".rds"))) +
+  theme(strip.background = element_blank(),
+        panel.spacing = unit(1, "mm"),
+        plot.margin = unit(c(2, 4, 2, 2), "mm"),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = "none") +
+  labs(fill = "Delivery mode") +
+  coord_cartesian(clip = "off")
+p4.legend <- readLines(here::here(paste0("figs/", p4.name, ".txt")))
+
+p5.name <- "5-targeted_analysis-delivery_mode_tewl_vs_shannon"
+p5 <- readRDS(here::here(paste0("figs/", p5.name, ".rds"))) +
+  facet_wrap(~delivery_mode, nrow = 2, scales = "free") +
+  theme(strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+p5.legend <- readLines(here::here(paste0("figs/", p5.name, ".txt")))
+
+fig.name <- "Fig4_delivery_mode"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend,
+                    "(D)", p4.legend,
+                    "(E)", p5.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(plot_grid(p1,
+                           p2,
+                           nrow = 1,
+                           rel_widths = c(1, 1),
+                           labels = c("(A)", "(B)"),
+                           align = "h",
+                           axis = "tb"),
+                 plot_grid(plot_grid(p3,
+                                     p4,
+                                     ncol = 1,
+                                     rel_heights = c(1, 1),
+                                     labels = c("(C)", "(D)"),
+                                     align = "v",
+                                     axis = "lr"),
+                           p5,
+                           nrow = 1,
+                           rel_widths = c(1, 0.75),
+                           labels = c("", "(E)")),
+                 nrow = 2,
+                 rel_heights = c(1, 1.6))
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 0.8*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+## Supplementary figures
+
+### Overview of 16SrRNA sequencing samples quality control and availability
+
+```{r FigS1_quality_control_and_samples_availability, eval = T}
+p1.name <- "2-dataset_characteristics-reads_distribution"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank()) +
+  scale_y_continuous() +
+  coord_cartesian(clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+p2.name <- "3-skin_microbiome_overview-rarefaction_curves"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(legend.position = "right",
+        legend.direction = "vertical",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+
+p3.name <- "1-preprocessing-diversity_outliers"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds"))) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+
+p4.name <- "1-preprocessing-diversity_outliers_composition"
+p4 <- readRDS(here::here(paste0("figs/", p4.name, ".rds"))) +
+  theme(legend.position = "right",
+        legend.key.size = unit(0.5, "line"),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  guides(fill = guide_legend(ncol = 1)) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(x = "Sample") +
+  coord_cartesian(clip = "off")
+p4.legend <- readLines(here::here(paste0("figs/", p4.name, ".txt")))
+
+fig.name <- "FigS1_quality_control_and_samples_availability"
+
+fig.legend <- paste("Overview of 16SrRNA sequencing samples quality control and availability.",
+                    "(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend,
+                    "(D)", p4.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(plot_grid(p1, p2,
+                           nrow = 1, labels = c("(A)", "(B)"),
+                           rel_widths = c(1, 1.5),
+                           align = "h",
+                           axis = "tb"),
+                 plot_grid(p3, p4,
+                           nrow = 1, labels = c("(C)", "(D)"),
+                           rel_widths = c(1, 1.5),
+                           align = "h",
+                           axis = "t"),
+                 nrow = 2,
+                 rel_heights = c(1, 1))
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = 0.75*fig.layout$width.double,
+         height = 0.6*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+### Identification of possible bacterial contamination in sampling and sequencing reagent and material
+
+```{r FigS2_controls_composition, eval = T}
+p1.name <- "1-preprocessing-controls_composition"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(panel.spacing = unit(1, "mm"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = "bottom",
+        legend.key.size = unit(0.5, "line"),
+        legend.spacing.y = unit(0, "line"),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  guides(fill = guide_legend(ncol = 4, byrow = T, reverse = T))
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+fig.name <- "FigS2_controls_composition"
+
+fig.legend <- paste("Sequencing reads obtained from control swabs and distilled water samples highlight possible bacterial contaminations in sampling and sequencing reagent and material.", p1.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- p1
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = fig.layout$width.single,
+         unit = "mm")
+}
+
+```
+
+`r fig.legend`
+
+### Outliers data
+
+```{r TableS2_outliers_data, eval = T}
+t1.name <- "2-dataset_characteristics-outliers_variables"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds"))) %>%
+  mutate_at(vars(-Variable), capitalize)
+t1.legend <- readLines(here::here(paste0("figs/", t1.name, ".txt")))
+
+tab.name <- "TableS2_outliers_data"
+
+write.csv(t1, here::here(paste0("figs/figures/", tab.name, ".csv")),
+          row.names = F)
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", tab.name, "_legend.txt"))))
+
+t1
+```
+
+`t1.legend`
+
+### Samples availability
+
+```{r FigS3_sample_availability, eval = T}
+p1.name <- "2-dataset_characteristics-subject_sample_availability"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(plot.margin = unit(c(0, 2, 2, 100), "mm"),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+
+p1.2.name <- "2-dataset_characteristics-subject_sample_availability_barplot"
+p1.2 <- readRDS(here::here(paste0("figs/", p1.2.name, ".rds"))) +
+  theme(
+    plot.margin = unit(c(2, 2, 0, 100), "mm"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+
+p2.name <-  "2-dataset_characteristics-inv_vars_class_summary_pre_selection_plot"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank(),
+        strip.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+fig.name <- "FigS3_sample_availability"
+
+fig.legend <- p1.legend
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p2,
+                 plot_grid(p1.2, p1,
+                           ncol = 1,
+                           rel_heights = c(1.5, 1),
+                           align = "v",
+                           axis = "lr"),
+                 ncol = 1,
+                 rel_heights = c(1, 0.3),
+                 align = "v",
+                 axis = "r")
+
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 0.9*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+```{r TableS3_sample_availability, eval = T}
+t1.name <- "2-dataset_characteristics-sample_availability_table"
+t1 <- readRDS(here::here("data/sample_summary.rds"))
+t1.legend <- readLines(here::here(paste0("figs/", t1.name, ".txt")))
+
+tab.name <- "TableS3_sample_availability"
+
+write.csv(t1, here::here(paste0("figs/figures/", tab.name, ".csv")),
+          row.names = F)
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", tab.name, "_legend.txt"))))
+
+t1
+```
+
+### Summary of the investigation variables characteristics
+
+```{r TableS4_investigation_variables_description, eval = T}
+t1 <- readRDS(here::here("data/inv_vars_categ_selected.rds")) %>%
+  mutate(Type = "Categorical") %>%
+  bind_rows(inv.vars %>%
+              filter(Variable %in% c("tewl_lua_mean_temp20_25_baby3mdr" ,
+                                     "tewl_lua_mean_temp20_25_baby6mdr",
+                                     "tewl_lua_mean_temp20_25_baby12mdr")) %>%
+              mutate(Type = "Numerical")
+  ) %>%
+  arrange(Type, Factor, SubCategory, Age)
+
+t1.legend <- "Investigation variables description."
+
+tab.name <- "TableS4_investigation_variables_description"
+
+write.csv(t1, here::here(paste0("figs/figures/", tab.name, ".csv")),
+          row.names = F)
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", tab.name, "_legend.txt"))))
+t1
+```
+
+Summary of categorical variables.
+```{r TableS5_investigation_variables_summary, eval = T}
+
+t.ref <- readRDS(here::here("data/inv_vars_categ_selected.rds")) %>%
+  arrange(Factor, SubCategory, Age) %>%
+  mutate(Variable = factor(Name, levels = unique(Name)))
+
+t1.name <- "2-dataset_characteristics-inv_vars_class_summary"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds"))) %>%
+  mutate(Variable = factor(Variable, levels = levels(t.ref$Variable)),
+         Label = Hmisc::capitalize(Label)) %>%
+  arrange(Variable)
+
+fig.name <- "TableS5_investigation_variables_summary"
+
+write.csv(t1, here::here(paste0("figs/figures/", fig.name, ".csv")),
+          row.names = F)
+
+fig.legend <- "Summary of categorical investigation variables."
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+t1
+```
+
+Summary of numerical variables
+```{r TableS6_investigation_variables_summary, eval = T}
+t1.name <- "2-dataset_characteristics-inv_vars_num_summary"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds"))) %>%
+  mutate(Age = recode_factor(Age, day.1 = "Day 1",
+                             month.3 = "3 months",
+                             month.6 = "6 months",
+                             month.12 = "12 months")) %>%
+  arrange(Age)
+
+fig.name <- "TableS6_investigation_variables_summary"
+
+write.csv(t1, here::here(paste0("figs/figures/", fig.name, ".csv")),
+          row.names = F)
+
+fig.legend <- "Summary of numerical investigation variables."
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+t1
+```
+
+### Summary of investigation variable distributions per age plus clustering of individuals based on variables related to the skin barrier.
+
+```{r FigS4_investigation_variables_summary, eval = T}
+p1.name <- paste0("2-dataset_characteristics-inv_vars_class_summary_plot")
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(legend.position = "left",
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_flip(expand = F, clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+p2.name <- paste0("1-preprocessing-data_imputation_error")
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_flip(expand = F, clip = "off")
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+
+p3.name <- "2-dataset_characteristics-tewl_distribution"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds"))) +
+  theme(panel.spacing = unit(1, "mm"),
+        strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+
+p4.name <- "5-targeted_analysis-tewl_vs_age"
+p4 <- readRDS(here::here(paste0("figs/", p4.name, ".rds"))) +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p4.legend <- readLines(here::here(paste0("figs/", p4.name, ".txt")))
+
+fig.name <- "FigS4_investigation_variables_summary"
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend,
+                    "(D)", p4.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(
+  plot_grid(p1,
+            p2,
+            nrow = 1,
+            labels = c("(A)", "(B)"),
+            rel_widths = c(2.25, 1),
+            align = "h",
+            axis = "tb"),
+  plot_grid(p3,
+            p4,
+            nrow = 1,
+            labels = c("(C)", "(D)"),
+            rel_widths = c(1.7, 1),
+            align = "h",
+            axis = "b"),
+  nrow = 2,
+  rel_heights = c(1.75, 1))
+
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = 0.75*fig.layout$width.double,
+         height = 0.8*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+```{r FigS5_clustering, eval = T}
+
+p1.name <- "2-dataset_characteristics-mca_skin_barrier_biplot"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+t1.name <- "2-dataset_characteristics-mca_skin_barrier_biplot_labels"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds"))) %>%
+  {
+    ggtexttable(select(., -`MCA label`),
+                rows = .$`MCA label`,
+                theme = ttheme(base_style = "classic",
+                               base_size = 8,
+                               padding = unit(c(2, 2), "mm"))) +
+      theme(plot.margin = unit(c(2, 2, 2, 0), "mm"),
+            panel.background = element_blank(),
+            plot.background = element_blank())
+  }
+t1.legend <- "Legend of the 10 most contributing variables shown in panel (D)."
+
+p2.name <- "2-dataset_characteristics-mca_skin_barrier_clusters_tewl"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(axis.title.x = element_blank(),
+        legend.position = "left",
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off") +
+  labs(fill = "Cluster")
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+
+p3.name <- "4_2-associations-inv_vars_class_summary_plot_per_age"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds"))) +
+  theme(panel.spacing = unit(1, "mm"),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_flip(expand = F, clip = "off")
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+
+fig.name <- "FigS5_clustering"
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", t1.legend,
+                    "(C)", p2.legend,
+                    "(D)", p3.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(plot_grid(p1,
+                           plot_grid(t1, p2,
+                                     ncol = 1,
+                                     labels = c("(B)", "(C)"),
+                                     rel_heights = c(1, 0.6),
+                                     align = "v",
+                                     axis = "lr"),
+                           nrow = 1,
+                           labels = c("(A)", ""),
+                           rel_widths = c(1, 1),
+                           align = "h",
+                           axis = "tb"),
+                 p3,
+                 ncol = 1,
+                 labels = c("", "(D)"),
+                 rel_heights = c(1, 1.2))
+
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = 0.9*fig.layout$width.double,
+         height = 1.1*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+### Overview of the skin bacterial community composition
+
+```{r TableS7_permanova_age, eval = T}
+t1.name <- "3-skin_microbiome_overview-age_perMANOVA"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds")))
+t1.legend <- readLines(here::here(paste0("figs/", t1.name, ".txt")))
+
+tab.name <- "TableS7_permanova_age"
+
+write.csv(t1, here::here(paste0("figs/figures/", tab.name, ".csv")),
+          row.names = F)
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", tab.name, "_legend.txt"))))
+
+t1
+```
+
+```{r FigS6_microbiome_overview_supp1, eval = T}
+
+p1.name <- "3-skin_microbiome_overview-within_vs_between_age_variation"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "top",
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, "_legend.txt")))
+
+p2.name <- "3-skin_microbiome_overview-species_diversity_temporal_variation"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds")))[["Richness"]] +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+
+p2.legend <- "Bacterial diversity represented in term of species richness across ages. Statistical significance assessed with the Kruskall-Wallis test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001."
+
+p3.name <- "3-skin_microbiome_overview-diversity_overview"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds"))) +
+  theme(axis.title.x = element_blank(),
+        strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+
+
+p4.name <- "3-skin_microbiome_overview-rf_age_roc"
+p4 <- readRDS(here::here(paste0("figs/", p4.name, ".rds"))) +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+p4.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+
+t2.name <- "3-skin_microbiome_overview-rf_age_roc_auc"
+t2 <- readRDS(here::here(paste0("figs/", t2.name, ".rds")))
+p4 <- p4 +
+  annotation_custom(tableGrob(t2, rows = NULL,
+                              theme = ttheme(base_style = "classic",
+                                             base_size = 8,
+                                             padding = unit(c(2, 2), "mm"))),
+                    xmin = 0.4, xmax = 0.9,
+                    ymin = 0.1, ymax = 0.5)
+
+fig.name <- "FigS6_microbiome_overview_supp1"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend,
+                    "(D)", p4.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(
+  plot_grid(p1, p3,
+            nrow = 1,
+            rel_widths = c(1, 1.75),
+            labels = c("(A)", "(B)"),
+            align = "h",
+            axis = "t"),
+  plot_grid(NULL, p2, p4, NULL,
+            nrow = 1,
+            rel_widths = c(0.3, 1, 1.75, 0.3),
+            labels = c("", "(C)", "(D)", ""),
+            align = "h",
+            axis = "tb"),
+  ncol = 1,
+  rel_heights = c(1, 1)
+)
+
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 0.7*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+### Heatmap of selected features for age prediction
+
+```{r FigS7_microbiome_overview_supp2, eval = T}
+p1.name <- "3-skin_microbiome_overview-rf_age_selected_species_hm"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds")))
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+fig.name <- "FigS7_microbiome_overview_supp2"
+
+fig.legend <- p1.legend
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- ggarrange(p1)
+
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 0.6*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+
+### PerMANOVA tables showing variables associated with microbiome, plus TEWL variations associated with these variables
+
+```{r TableS8_permanova_investigation_variables, eval = T}
+t1.name <- "4_2-associations-vars_all_perMANOVA"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds"))) %>%
+  separate(Term, into = c("Variable", "Interaction"), sep = ":") %>%
+  left_join(inv.vars %>%
+              dplyr::select(Variable, VariableName = Name)) %>%
+  mutate(VariableName = ifelse(is.na(VariableName),
+                               as.character(Variable),
+                               as.character(VariableName))) %>%
+  left_join(inv.vars %>%
+              dplyr::select(Interaction = Variable, InteractionName = Name)) %>%
+  mutate(Term = ifelse(is.na(Interaction),
+                       as.character(VariableName),
+                       paste(VariableName,
+                             InteractionName, sep = " : "))) %>%
+  dplyr::select(Age, Term,
+                Df, SumsOfSqs, MeanSqs, F.Model, R2, `Pr(>F)`, Sig) %>%
+  arrange(Age, `Pr(>F)`)
+
+t1.legend <- readLines(here::here(paste0("figs/", t1.name, "_legend.txt")))
+
+fig.name <- "TableS8_permanova_investigation_variables"
+
+t1 %>%
+  write.csv(here::here(paste0("figs/figures/", fig.name, ".csv")),
+            row.names = F)
+
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+t1
+```
+
+```{r FigS8_investigation_variables_associations_supp1, eval = T}
+
+p1.name <- "4_2-associations-diversity_vars"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(strip.background = element_blank(),
+        panel.spacing = unit(1, "mm"),
+        plot.margin = unit(c(2, 2, 2, 2), "mm"),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, "_legend.txt")))
+
+
+p3.name <- "4_2-associations-permanova_variance_explained_barplot_supp"
+p3 <- readRDS(here::here(paste0("figs/4_2-associations-permanova_variance_explained_barplot_supp.rds")))
+p3.legend <- readLines(here::here(paste0("figs/4_2-associations-permanova_variance_explained_barplot_legend.txt")))
+
+
+p2.name <- "4_2-associations-tewl_vars"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(panel.spacing = unit(1, "mm"),
+        plot.margin = unit(c(2, 2, 2, 2), "mm"),
+        strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, "_legend.txt")))
+
+fig.name <- "FigS8_investigation_variables_associations_supp1"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p3.legend,
+                    "(C)", p2.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1, plot_grid(p3, p2,
+                               labels = c("(B)", "(C)"),
+                               nrow = 1,
+                               rel_widths = c(1, 2.5)),
+                 labels = c("(A)", ""),
+                 ncol = 1,
+                 rel_heights = c(1, 0.65))
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 1.1*fig.layout$width.double,
+         unit = "mm")
+}
+
+fig
+```
+
+`r fig.legend`
+
+### Taxa associated with investigation variables
+
+```{r TableS9_taxa_selection_investigation_variables, eval = T}
+t1 <- readRDS(here::here("data/splsda_output_data_summary.rds")) %>%
+  mutate(step2.n.selected.taxa = replace_na(step2.n.selected.taxa, 0),
+         Age = recode_factor(Age, day.1 = "Day 1",
+                             month.3 = "3 months",
+                             month.6 = "6 months",
+                             month.12 = "12 months")) %>%
+  arrange(Age, Variable)
+
+t1.legend <- "Summary of the feature extraction process for identification of taxa associated with investigation variables. n.samples: number of samples available. step1.n.taxa: Number of taxa associated with the variable as assessed by Kruskall-Wallis test (p < 0.05). step2.n.taxa: Number of associations confirmed by SPLS-DA."
+
+fig.name <- "TableS9_taxa_selection_investigation_variables"
+
+t1 %>%
+  write.csv(here::here(paste0("figs/figures/", fig.name, ".csv")),
+            row.names = F)
+
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+t1
+```
+
+```{r FigS9-14_investigation_variables_associations_supp2, eval = T}
+
+fig.name <- "FigS9-14_investigation_variables_associations_supp2"
+
+dir.create(here::here("figs/figures", fig.name),
+           showWarnings = F)
+
+t1 <- splsda.output.data.summary <- readRDS(here::here("data/splsda_output_data_summary.rds")) %>%
+  filter(!Variable %in% c("delivery_mode"))
+
+for(i in 1:nrow(t1)){
+  f.name <- paste0("4_2-associations-splsda_",
+                   t1$Age[i], "_",
+                   t1$Variable[i],
+                   "_selected_taxa")
+  file.copy(here::here("figs", paste0(f.name, ".pdf")),
+            here::here("figs/figures", fig.name,
+                       paste0(f.name, ".pdf")),
+            overwrite = T)
+  
+  file.copy(here::here("figs", paste0(f.name, "_legend.txt")),
+            here::here("figs/figures", fig.name,
+                       paste0(f.name, "_legend.txt")),
+            overwrite = T)
+  
+  file.copy(here::here("figs", paste0(f.name, ".rds")),
+            here::here("figs/figures", fig.name,
+                       paste0(f.name, ".rds")),
+            overwrite = T)
+}
+```
+
+```{r FigS9_associations_birth_location, eval = T}
+p1.name <- "4_2-associations-splsda_Day 1_study_geo_locations_basearticle_selected_taxa"
+p1 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p1.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, "_legend.txt")))
+
+p2.name <- "4_2-associations-splsda_3 months_study_geo_locations_basearticle_selected_taxa"
+p2 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p2.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, "_legend.txt")))
+
+p3.name <- "4_2-associations-splsda_6 months_study_geo_locations_basearticle_selected_taxa"
+p3 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p3.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p3.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p3.name, "_legend.txt")))
+
+fig.name <- "FigS9_associations_birth_location"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1, p2, p3,
+                 ncol = 1,
+                 rel_heights = c(1, 1, 1),
+                 labels = c("(A)", "(B)", "(C)"),
+                 align = "v",
+                 axis = "l")
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 1.4*fig.layout$height.max,
+         unit = "mm")
+}
+fig
+```
+
+```{r FigS10_associations_dog, eval = T}
+
+p1.name <- "4_2-associations-splsda_3 months_dog_preg_selected_taxa"
+p1 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, ".rds")))
+p1.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, "_legend.txt")))
+
+p2.name <- "4_2-associations-splsda_6 months_dog_preg_selected_taxa"
+p2 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p2.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, "_legend.txt")))
+
+fig.name <- "FigS10_associations_dog"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1 +
+                   theme(plot.margin = unit(c(2, 70, 2, 2), "mm")),
+                 p2,
+                 ncol = 1,
+                 rel_heights = c(1, 1),
+                 labels = c("(A)", "(B)"))
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 0.9*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+```{r FigS11_associations_breastfeeding, eval = T}
+p1.name <- "4_2-associations-splsda_3 months_nutr_breastfeed_6m_selected_taxa"
+p1 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p1.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, "_legend.txt")))
+
+p2.name <- "4_2-associations-splsda_6 months_nutr_breastfeed_6m_selected_taxa"
+p2 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p2.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, "_legend.txt")))
+
+fig.name <- "FigS11_associations_breastfeeding"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1, p2,
+                 ncol = 1,
+                 rel_heights = c(1, 1),
+                 labels = c("(A)", "(B)"),
+                 align = "v",
+                 axis = "lr")
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 1.25*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+```{r FigS12_associations_dry_skin_3m, eval = T}
+p1.name <- "4_2-associations-splsda_Day 1_Dry_skin_examination_baby3mdr_selected_taxa"
+p1 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p1.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, "_legend.txt")))
+
+p2.name <- "4_2-associations-splsda_3 months_Dry_skin_examination_baby3mdr_selected_taxa"
+p2 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p2.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, "_legend.txt")))
+
+p3.name <- "4_2-associations-splsda_12 months_Dry_skin_examination_baby3mdr_selected_taxa"
+p3 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p3.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p3.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p3.name, "_legend.txt")))
+
+fig.name <- "FigS12_associations_dry_skin_3m"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1, p2, p3,
+                 ncol = 1,
+                 rel_heights = c(1, 1, 1),
+                 labels = c("(A)", "(B)", "(C)"),
+                 align = "v",
+                 axis = "lr")
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 1.9*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+```{r FigS13_associations_mother_foodallergy, eval = T}
+p1.name <- "4_2-associations-splsda_Day 1_mother_foodallergy3cat_selected_taxa"
+p1 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p1.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, "_legend.txt")))
+
+p2.name <- "4_2-associations-splsda_6 months_mother_foodallergy3cat_selected_taxa"
+p2 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p2.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, "_legend.txt")))
+
+fig.name <- "FigS13_associations_mother_foodallergy"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1, p2,
+                 ncol = 1,
+                 rel_heights = c(1, 1),
+                 labels = c("(A)", "(B)"),
+                 align = "v",
+                 axis = "lr")
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 1.3*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+```{r FigS14_associations_tewl_6m, eval = T}
+p1.name <- "4_2-associations-splsda_Day 1_tewl_lua_mean_temp20_25_baby6mdr_quartiles_selected_taxa"
+p1 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p1.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p1.name, "_legend.txt")))
+
+p2.name <- "4_2-associations-splsda_3 months_tewl_lua_mean_temp20_25_baby6mdr_quartiles_selected_taxa"
+p2 <- readRDS(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p2.legend <- readLines(here::here(paste0("figs/figures/FigS9-14_investigation_variables_associations_supp2/", p2.name, "_legend.txt")))
+
+fig.name <- "FigS14_associations_tewl_6m"
+
+fig.legend <- paste("(A)", p1.legend,
+                    "(B)", p2.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1, p2,
+                 ncol = 1,
+                 rel_heights = c(0.9, 1),
+                 labels = c("(A)", "(B)"),
+                 align = "v",
+                 axis = "lr")
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = 1.2*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+### Diversity associated with investigation variables and associations between skin bacteria and TEWL
+
+```{r FigS15_investigation_variables_associations_supp3, eval = T}
+
+p2.name <- "4-associations-tewl_spls_selected_taxa"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(legend.position = "right",
+        panel.spacing = unit(1, "mm"),
+        axis.title = element_blank(),
+        strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.key.width = unit(3, "mm"),
+        legend.key.height = unit(5, "mm")) +
+  coord_cartesian(clip = "off")
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+
+p3.name <- "5-targeted_analysis-specific_taxa_vs_tewl"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds"))) +
+  theme(plot.margin = unit(c(0, 15, 0, 0), "mm"),
+        panel.spacing = unit(1, "mm"),
+        strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank())+
+  coord_cartesian(clip = "off")
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, "_legend.txt")))
+
+
+fig.name <- "FigS15_investigation_variables_associations_supp3"
+
+fig.legend <- paste("(A)", p2.legend,
+                    "(B)", p3.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p2, p3,
+                 nrow = 1,
+                 rel_widths = c(1.5, 1),
+                 labels = c("(A)", "(B)"),
+                 align = "h",
+                 axis = "tb")
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = 0.9*fig.layout$width.double,
+         height = fig.layout$width.single,
+         unit = "mm")
+}
+fig
+```
+
+### Impact of delivery mode on the skin bacterial community composition
+
+```{r FigS16_delivery_mode_supp1, eval = T}
+
+p1.name <- "5-targeted_analysis-maturation_delivery_mode_boxplots"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(legend.position = "top",
+        panel.spacing = unit(1, "mm"),
+        strip.background = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+p2.name <- "5-targeted_analysis-delivery_mode_diversity"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds")))$Richness +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        panel.spacing = unit(1, "mm"),
+        legend.position = "none") +
+  coord_cartesian(clip = "off")
+p2.legend <- "Skin bacterial richness across age and different delivery mode. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+
+p3.name <- "5-targeted_analysis-delivery_mode_associated_taxa_day_1"
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds"))) +
+  theme(strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        panel.spacing = unit(1, "mm"),
+        legend.position = "none") +
+  coord_cartesian(clip = "off")
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+
+fig.name <- "FigS16_delivery_mode_supp1"
+
+fig.legend <- paste("The mode of delivery impacts on the skin bacterial community composition in early life.",
+                    # "(A)", t1.legend,
+                    "(A)", p1.legend,
+                    "(B)", p2.legend,
+                    "(C)", p3.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1,
+                 p2,
+                 p3,
+                 ncol = 1,
+                 rel_heights = c(1, 0.75, 1),
+                 labels = c("(A)", "(B)", "(C)"),
+                 align = "v",
+                 axis = "lr")
+
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.double,
+         height = fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+
+### Taxa associated with delivery mode
+
+```{r FigS17_delivery_mode_supp2, eval = T}
+
+fig.name <- "FigS17_delivery_mode_supp2"
+
+p.name <- paste0("4_2-associations-splsda_Day 1_delivery_mode_selected_taxa")
+
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds"))) %>%
+  ggplotify::as.ggplot()
+p.legend <- readLines(here::here(paste0("figs/", p.name, "_legend.txt")))
+
+
+fig.legend <- p.legend
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- p
+
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = 1.2*fig.layout$width.double,
+         height = fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+### Associations between delivery mode and variables reflecting the skin barrier
+
+```{r FigS18_delivery_mode_supp3, eval = T}
+
+p1.name <- "4_2-associations-delivery_mode_all_odds"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.background = element_blank(),
+        panel.spacing = unit(1, "mm"),
+        legend.key = element_blank()) +
+  coord_flip(expand = T, clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, "_legend.txt")))
+
+fig.name <- "FigS18_delivery_mode_supp3"
+
+fig.legend <- p1.legend
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- p1
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = 0.75*fig.layout$width.double,
+         height = 0.6*fig.layout$width.double,
+         unit = "mm")
+}
+fig
+```
+
+`r fig.legend`
+
+
+```{r TableS10_delivery_mode_odds_ratio, eval = T}
+t1.name <- "4_2-associations-delivery_mode_all_odds_table"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds")))
+t1.legend <- readLines(here::here(paste0("figs/", t1.name, "_legend.txt")))
+
+fig.name <- "TableS10_delivery_mode_odds_ratio"
+
+t1 %>%
+  write.csv(here::here(paste0("figs/figures/", fig.name, ".csv")),
+            row.names = F)
+
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+t1
+```
+
+### Association between allergy and skin microbiome
+
+```{r TableS11_permanova_allergy, eval = T}
+t1.name <- "adonis_out_vars_tageted"
+t1 <- readRDS(here::here(paste0("data/", t1.name, ".rds"))) %>%
+  format_adonis_output_table() %>%
+  dplyr::mutate(Age = factor(Age, levels = c("Day 1",
+                                             "3 months",
+                                             "6 months",
+                                             "12 months"))) %>%
+  dplyr::arrange(Age, Term) %>%
+  dplyr::select(Age, Term, Df, SumsOfSqs, MeanSqs, F.Model, R2, `Pr(>F)`, Sig)
+
+tab.name <- "TableS11_permanova_allergy"
+
+write.csv(t1, here::here(paste0("figs/figures/", tab.name, ".csv")),
+          row.names = F)
+writeLines(t1.legend, file(here::here(paste0("figs/figures/", tab.name, "_legend.txt"))))
+
+t1
+```
+
+```{r FigS19_allergy, eval = T}
+p1.name <- "5-targeted_analysis-diversity_vs_allergy"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds"))) +
+  theme(panel.spacing = unit(1, "mm"),
+        strip.background = element_blank(),
+        axis.title.x = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+p2.name <- "5-targeted_analysis-tewl_vs_allergy"
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds"))) +
+  theme(strip.background = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        panel.spacing = unit(1, "mm")) +
+  coord_cartesian(clip = "off")
+
+p2.legend <- "Skin bacterial richness across age and different delivery mode. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+
+fig.name <- "FigS19_allergy"
+
+fig.legend <- paste("Allergy as assessed by SPT at 36 months is associated with the skin bacterial community composition and TEWL at 3 months.",
+                    "(A)", p1.legend,
+                    "(B)", p2.legend)
+
+writeLines(fig.legend, file(here::here(paste0("figs/figures/", fig.name, "_legend.txt"))))
+
+fig <- plot_grid(p1,
+                 p2,
+                 ncol = 1,
+                 rel_heights = c(1.5, 1),
+                 labels = c("(A)", "(B)"),
+                 align = "v",
+                 axis = "lr")
+
+saveRDS(fig, here::here(paste0("figs/figures/", fig.name, ".rds")))
+for(f in c("png", "pdf", "svg")) {
+  ggsave(plot = fig,
+         filename = here::here(paste0("figs/figures/", fig.name, ".", f)),
+         device = f,
+         bg = "transparent",
+         width = fig.layout$width.single,
+         height = 0.8*fig.layout$width.single,
+         unit = "mm")
+}
+fig
+```
+
+
+## Session info
+```{r, eval = T}
+sessionInfo()
+```

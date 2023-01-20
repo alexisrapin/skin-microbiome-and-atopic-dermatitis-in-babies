@@ -1,0 +1,729 @@
+---
+title: "2 Dataset characteristics"
+author: "Alexis Rapin (alexis.rapin@epfl.ch)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+In this notebook, general characteristics of the microbiome and clinical data are highlighted with figures.
+
+```{r knitr, echo=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+```{r setup, eval=TRUE, collapse=TRUE}
+notebook.name <- "2-dataset_characteristics"
+
+# Load R packages
+suppressMessages(library(here)); packageVersion("here")
+suppressMessages(library(tidyverse)); packageVersion("tidyverse")
+suppressMessages(library(reshape2)); packageVersion("reshape2")
+suppressMessages(library(ggpubr)); packageVersion("ggpubr")
+suppressMessages(library(ggrepel))
+suppressMessages(library(cowplot)); packageVersion("cowplot")
+suppressMessages(library(FactoMineR)); packageVersion("FactoMineR")
+suppressMessages(library(fpc)); packageVersion("fpc")
+suppressMessages(library(missForest)); packageVersion("missForest")
+
+# Load project-specific functions
+source(here::here("lib/lib.R"))
+
+# Load project variables
+load(here::here("etc/project_vars.RData"))
+
+set.seed(seed)
+
+# Set figures theme
+theme_set(theme)
+```
+
+## Overview of dataset characteristics
+Summarize the general characteristics of the dataset
+```{r sequencing_overview, eval=F}
+data.raw <- readRDS(here::here("data/data_raw.rds"))
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered <- readRDS(here::here("data/mb_counts_filtered.rds"))
+mb.counts <- readRDS(here::here("data/mb_counts.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+
+# Show the number of collected samples per age groups
+
+sample.summary <- data.raw %>%
+  {
+    list(`DNA library sequenced` = filter(., SampleID %in% names(mb.counts),
+    ) %>%
+      dplyr::select(Age) %>%
+      dplyr::group_by(Age) %>%
+      count(.),
+    `Sequences number above thres.` = filter(., SampleID %in% names(mb.counts.filtered)) %>%
+      dplyr::select(Age) %>%
+      dplyr::group_by(Age) %>%
+      count(.),
+    `Species richness above thres.` = filter(., SampleID %in% (outliers %>%
+                                                                 filter(outlier == FALSE) %>%
+                                                                 select(SampleID) %>%
+                                                                 unlist)) %>%
+      dplyr::select(Age) %>%
+      dplyr::group_by(Age) %>%
+      count(.)
+    )
+  } %>%
+  bind_rows(.id = "step") %>% 
+  ungroup %>%
+  mutate(Age = recode_factor(Age, day.1 = "Day 1",
+                             month.3 = "3 months",
+                             month.6 = "6 months",
+                             month.12 = "12 months")) %>%
+  spread(Age, n) %>%
+  rbind(c("Skin swabs collected", unlist(n.init.subj)), .)
+saveRDS(sample.summary, here::here("data/sample_summary.rds"))
+
+t1 <- sample.summary %>%
+  ggtexttable(theme = ttheme(base_style = "classic",
+                             base_size = 8,
+                             padding = unit(c(2, 2), "mm")))
+
+t1.name <- paste0(notebook.name, "-sample_availability_table")
+
+t1.legend <- paste0("Number of samples available for each time-point after skin swabs collection, bacterial DNA extraction and 16S rRNA gene amplicons sequencing, sequences quality filtering and outliers removal. Quality filtering threshold set to ", seq.depth.thres, " reads per sample.")
+
+saveRDS(t1, here::here(paste0("figs/", t1.name, ".rds")))
+writeLines(t1.legend, file(here::here(paste0("figs/", t1.name, ".txt"))))
+
+
+# Show the distribution of reads across samples
+p1 <- data %>%
+  {
+    ggplot(., aes(x = SeqDepth)) +
+      geom_histogram(stat = "bin") +
+      stat_bin(aes(y = 200*cumsum(..count..)/max(cumsum(..count..))),
+               geom = "line", color = "red") +
+      scale_y_continuous(sec.axis = sec_axis(trans = ~.*nrow(data)/200,
+                                             name = "Samples number (cumulative)")) +
+      labs(x="Number of reads", y="Samples number") +
+      geom_vline(xintercept = seq.depth.thres,
+                 lty = 2) +
+      annotate(geom = "text",
+               x = seq.depth.thres,
+               y = 100,
+               label = paste(seq.depth.thres, "reads"),
+               angle = 90,
+               vjust = 1,
+               size = theme_get()$text[["size"]]/2.85,
+               family = theme_get()$text[["family"]])
+  }
+p1.name <- paste0(notebook.name, "-reads_distribution")
+
+p1.legend <- paste0("Distribution of the number of 16S rRNA gene amplicons reads across samples. The vertical dashed line indicates the quality filtering threshold of ", seq.depth.thres, " reads per sample.")
+
+saveRDS(p1, here::here(paste0("figs/", p1.name, ".rds")))
+writeLines(p1.legend, file(here::here(paste0("figs/", p1.name, ".txt"))))
+
+# Show subject samples availability across time-points
+d <- data %>%
+  # Filter samples with low read count
+  filter(SeqDepth > seq.depth.thres) %>%
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          dplyr::select(SampleID) %>% unlist)) %>%
+  dplyr::select(nnid, Age) %>%
+  mutate(n = 1) %>%
+  spread(Age, n) %>%
+  unite("profile", 2:ncol(.), sep = "", remove = F) %>%
+  dplyr::group_by(profile) %>%
+  dplyr::mutate(count = n_distinct(nnid)) %>%
+  ungroup %>%
+  dplyr::select(-nnid) %>%
+  unique %>%
+  dplyr::arrange(-count) %>%
+  mutate(label = as.factor(paste0(c(1:nrow(.)), " n=", count))) %>%
+  mutate(label = factor(label, levels = rev(unique(label)))) %>%
+  melt(id.vars = c("count", "profile", "label")) %>%
+  mutate(value = factor(replace_na(value, replace = 0)),
+         variable = factor(variable, levels = rev(levels(variable))),
+         label = factor(label, levels = rev(levels(label))))
+
+p2 <- d %>%
+  ggplot(aes(y = variable, x = label, fill = value)) +
+  geom_tile(color = "gray") +
+  scale_x_discrete(position = "top", expand = c(0, 0)) +
+  # scale_y_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("white", "black")) +
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        axis.title = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = "none") +
+  coord_cartesian(expand = F, clip = "off")
+
+p3 <- d %>%
+  dplyr::select(label, count) %>%
+  unique %>%
+  {
+    ggplot(.,
+           aes(x = label, y = count)) +
+      geom_bar(stat = "identity") +
+      scale_y_continuous(limits = c(0,
+                                    max(.$count) + 0.3*max(.$count))) +
+      geom_text(aes(label = count),
+                angle = 90,
+                hjust = -0.2,
+                size = fig.layout$font.size/3,
+                family = fig.layout$font.family) +
+      coord_cartesian(expand = F, clip = "off") +
+      labs(y = "n") +
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank())
+  }
+
+p2.name <- paste0(notebook.name, "-subject_sample_availability")
+p3.name <- paste0(notebook.name, "-subject_sample_availability_barplot")
+
+p2.legend <- "Number of subjects for whom sequencing reads were obtained across multiple time-points."
+
+saveRDS(p2, here::here(paste0("figs/", p2.name, ".rds")))
+saveRDS(p3, here::here(paste0("figs/", p3.name, ".rds")))
+writeLines(p2.legend, file(here::here(paste0("figs/", p2.name, ".txt"))))
+```
+```{r, eval=T, echo=F}
+t1.name <- paste0(notebook.name, "-sample_availability_table")
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds")))
+t1.legend <- readLines(here::here(paste0("figs/", t1.name, ".txt")))
+
+p1.name <- paste0(notebook.name, "-reads_distribution")
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds")))
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+
+p2.name <- paste0(notebook.name, "-subject_sample_availability")
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds")))
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+```
+```{r, eval=T}
+t1
+```
+
+`r t1.legend`
+
+```{r, eval=T}
+p1
+```
+
+`r p1.legend`
+```{r, eval=T}
+p2
+```
+```{r, eval=T}
+p3
+```
+
+`r p2.legend`
+
+## Summarize categorical data availability across time points
+
+```{r, eval = T, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r, eval = F}
+inv.vars.categ <- as.character(inv.vars$Variable)
+
+t1 <- data %>%
+  # Filter samples with low read count
+  filter(SeqDepth > seq.depth.thres) %>%
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          dplyr::select(SampleID) %>% unlist)) %>%
+  # Select categorical variables
+  dplyr::select(one_of(c("SampleID", "Age", "nnid", inv.vars.categ))) %>%
+  {.[!duplicated(.), ]} %>%
+  select_if(is.factor)
+
+p <- t1 %>%
+  gather(Variable, label, -SampleID, -nnid, -Age) %>%
+  dplyr::group_by(Age, Variable, label) %>%
+  dplyr::summarise(n = n_distinct(nnid)) %>%
+  ungroup %>%
+  dplyr::group_by(Variable) %>%
+  dplyr::arrange(n, .by_group = T) %>%
+  dplyr::mutate(label.id = as.numeric(factor(label, levels = unique(label)))) %>%
+  ungroup %>%
+  dplyr::mutate(label.id = ifelse((!is.na(label.id)) & (n < 10),
+                                  "n<10",
+                                  as.character(label.id))) %>%
+  left_join(dplyr::select(inv.vars, Variable, Name, Factor)) %>%
+  dplyr::arrange(Factor, Variable) %>%
+  dplyr::mutate(Name = factor(Name, levels = unique(Name))) %>%
+  ggplot(aes(x = Name, y = n, fill = label.id)) +
+  theme +
+  facet_grid(~Age) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c(rev(brewer.pal(4, "BuGn")), "deeppink"), na.value = "grey") +
+  coord_flip(expand = F, clip = "off") +
+  theme(legend.position = "left",
+        axis.title.y = element_blank()) +
+  labs(fill = "Label")
+
+p.name <- paste0(notebook.name, "-inv_vars_class_summary_pre_selection_plot")
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Summary of categorical investigatory variables characteristics. Variables with small group size are highlighted in pink color."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- paste0(notebook.name, "-inv_vars_class_summary_pre_selection_plot")
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+## Summarize categorical variables
+Key characteristics of the variables that will be used in subsequent analyses.
+
+```{r, eval = T, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r first insights class balance, eval = F}
+inv.vars.categ.selected <- readRDS(here::here("data/inv_vars_categ_selected.rds"))
+
+t1 <- data %>%
+  # Filter samples with low read count
+  filter(SeqDepth > seq.depth.thres) %>%
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          dplyr::select(SampleID) %>% unlist)) %>%
+  # Select categorical investigation variables
+  dplyr::select(one_of(c("nnid", as.character(inv.vars.categ.selected$Variable)))) %>%
+  {.[!duplicated(.), ]} %>%
+  dplyr::select(-nnid) %>%
+  select_if(is.factor) %>%
+  # Summarize class sizes
+  {
+    lapply(names(.), function(x){
+      table(.[[x]], useNA = "always") %>%
+        as.data.frame %>%
+        mutate(Variable = x)
+    }) %>%
+      bind_rows()
+  } %>%
+  left_join(inv.vars.categ.selected, by = "Variable") %>%
+  dplyr::select(Factor, Variable = Name, Label = Var1, n = Freq) %>%
+  # filter(!is.na(Factor)) %>%
+  arrange(Factor)
+
+t1.name <- paste0(notebook.name, "-inv_vars_class_summary")
+saveRDS(t1,
+        here::here(paste0("figs/", t1.name, ".rds")))
+# Print the table into a text file
+fwrite(t1,
+       here::here(paste0("figs/", t1.name, ".txt")))
+```
+```{r, eval=T, echo=F}
+t1.name <- paste0(notebook.name, "-inv_vars_class_summary")
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds")))
+```
+```{r, eval=T}
+t1
+```
+```{r, eval = F, echo = F}
+t1.name <- paste0(notebook.name, "-inv_vars_class_summary")
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds")))
+```
+```{r, eval = F}
+data.imputed <- readRDS(here::here("data/data_imputed.rds"))
+
+p <- t1 %>%
+  left_join(drop_na(.) %>%
+              dplyr::group_by(Factor, Variable) %>%
+              dplyr::arrange(n, .by_group = T) %>%
+              dplyr::mutate(Label.id = 1:n()) %>%
+              dplyr::ungroup()) %>%
+  left_join(data.frame(Name = dplyr::select(data.imputed$ximp, -nnid) %>%
+                         names(),
+                       OOBerror = data.imputed$OOBerror) %>%
+              left_join(inv.vars %>%
+                          dplyr::select(Name = Variable, Variable = Name),
+                        by = "Name"),
+            by = "Variable") %>%
+  dplyr::arrange(-OOBerror, Variable) %>%
+  dplyr::mutate(Variable = factor(Variable, levels = unique(Variable))) %>%
+  dplyr::arrange(Variable, Label.id) %>%
+  dplyr::mutate(Label.id = factor(Label.id, levels = sort(unique(Label.id)))) %>%
+  ggplot(aes(x = Variable, y = n, fill = Label.id)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "BuGn", na.value = "grey",
+                    direction = -1) +
+  labs(fill = "Label") +
+  coord_flip(expand = F) +
+  theme(axis.title.y = element_blank())
+
+p.name <- paste0(notebook.name, "-inv_vars_class_summary_plot")
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Summary of categorical investigatory variables characteristics."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- paste0(notebook.name, "-inv_vars_class_summary_plot")
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+## Summarize numerical variables
+```{r, eval = T, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r first insights numeric variables, eval = F}
+t2 <- data %>%
+  # Filter samples with low read count
+  filter(SeqDepth > seq.depth.thres) %>%
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          dplyr::select(SampleID) %>% unlist)) %>%
+  # Select numeric investigation variables
+  dplyr::select(one_of(c("nnid", as.vector(unlist(inv.vars$Variable))))) %>%
+  unique %>%
+  dplyr::select_if(is.numeric) %>%
+  gather("Variable", "value") %>%
+  group_by(Variable) %>%
+  dplyr::summarise(mean = round(mean(value, na.rm = T), digits = 2),
+                   sd = round(sd(value, na.rm = T), digits = 2),
+                   n = sum(!is.na(value)),
+                   na = sum(is.na(value))) %>%
+  left_join(inv.vars, by = "Variable") %>%
+  dplyr::select(Factor, Variable = ShortName, Age, mean, sd, n, na)
+
+t2.name <- paste0(notebook.name, "-inv_vars_num_summary")
+saveRDS(t2, here::here(paste0("figs/", t2.name, ".rds")))
+
+# Print the table into a text file and as a figure
+fwrite(t2,
+       here::here(paste0("figs/", t2.name, ".txt")))
+```
+```{r, eval=T, echo=F}
+t2.name <- paste0(notebook.name, "-inv_vars_num_summary")
+t2 <- readRDS(here::here(paste0("figs/", t2.name, ".rds")))
+```
+```{r, eval=T}
+t2
+```
+
+Plot the numerical variables (i.e TEWL values)
+```{r, eval = T, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r}
+d <- data %>%
+  # Filter samples with low read count
+  filter(SeqDepth > seq.depth.thres) %>%
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          dplyr::select(SampleID) %>% unlist)) %>%
+  # Select numeric investigation variables
+  dplyr::select(one_of(c("nnid", as.vector(unlist(inv.vars$Variable))))) %>%
+  unique %>%
+  dplyr::select_if(is.numeric) %>%
+  melt %>%
+  left_join(inv.vars %>%
+              dplyr::select(variable = Variable, ShortName, Age),
+            by = "variable") %>%
+  mutate(Age = recode_factor(Age, day.1 = "Day 1",
+                             month.3 = "3 months",
+                             month.6 = "6 months",
+                             month.12 = "12 months"))
+
+
+p3 <- d %>%
+  ggplot(aes(x = value)) +
+  facet_wrap(~Age) +
+  geom_histogram(fill = "black") +
+  labs(x = "TEWL (g/m2/h)",
+       y = "N")
+
+p3.name <- paste0(notebook.name, "-tewl_distribution")
+saveRDS(p3, here::here(paste0("figs/", p3.name, ".rds")))
+
+p3.legend <- "Transepidermal water loss (TEWL) values distribution at 3, 6 and 12 months of age. TEWL measured on the left lateral upper arm (mean of 3 measurements sampled at room temperature between 20 and 25°C)."
+writeLines(p3.legend, file(here::here(paste0("figs/", p3.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p3.name <- paste0(notebook.name, "-tewl_distribution")
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds")))
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+```
+```{r, eval = T}
+p3
+```
+
+`r p3.legend`
+
+
+## Summarize skin-related clinical observations using Multiple Correspondence Analysis (MCA)
+
+Patterns and combinations of clinical observations are hard to catch looking at individual variables separately and most recorded categorical variables show imbalanced classes. MCA offers an integrative approach to summarize these observations and overlook the class imbalance issue. 
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+data.imputed <- readRDS(here::here("data/data_imputed.rds"))
+```
+```{r, eval = F}
+inv.vars.categ.selected <- readRDS(here::here("data/inv_vars_categ_selected.rds"))
+
+mca.skin.barrier <- data.imputed$ximp[, data.imputed$OOBerror < 0.5] %>%
+  dplyr::select(one_of("nnid",
+                       inv.vars.categ.selected %>%
+                         filter(Factor == "Skin barrier") %>%
+                         {as.character(.$Variable)})) %>%
+  {.[!duplicated(.), ]} %>%
+  dplyr::mutate_at(vars(-nnid), as.character) %>%
+  dplyr::mutate_at(vars(-nnid), capitalize) %>%
+  `row.names<-`(.$nnid) %>%
+  dplyr::select(-nnid) %>%
+  `names<-`(inv.vars.categ.selected$Name[match(names(.), inv.vars.categ.selected$Variable)]) %>%
+  MCA(graph = F)
+
+saveRDS(mca.skin.barrier, here::here("data/mca_skin_barrier.rds"))
+```
+```{r, eval = F, echo = F}
+mca.skin.barrier <- readRDS(here::here("data/mca_skin_barrier.rds"))
+```
+```{r, eval = F}
+mca.skin.barrier.ind.clustering <- mca.skin.barrier$ind$coord %>%
+  as.data.frame %>%
+  dplyr::mutate(# Force the definition of only 2 clusters (optimal number of cluster is 10 but this is not acceptable for downstream analyses)
+    pamk2 = pamk(as.matrix(.), scaling = F,
+                 krange = 2)$pamobject$clustering %>%
+      as.factor,
+    nnid = row.names(.))
+saveRDS(mca.skin.barrier.ind.clustering, here::here("data/mca_skin_barrier_ind_clustering.rds"))
+
+mca.skin.barrier.var <- mca.skin.barrier$var$contrib %>%
+  as.data.frame %>%
+  dplyr::select(`Dim 1`, `Dim 2`) %>%
+  dplyr::mutate(sum = rowSums(.),
+                variable = row.names(.)) %>%
+  # Select variables significantly associated with any of the first 2 dimensions
+  filter(variable %in% (mca.skin.barrier$var$v.test %>%
+                          as.data.frame %>%
+                          dplyr::mutate(variable = row.names(.)) %>%
+                          filter(abs(`Dim 1`) > 2 | abs(`Dim 2`) > 2) %>%
+                          dplyr::select(variable) %>%
+                          unlist)) %>%
+  # Select the top 10 variables explaining the first 2 dimensions
+  dplyr::arrange(-sum) %>%
+  dplyr::select(variable) %>%
+  head(10) %>%
+  unlist %>%
+  { mca.skin.barrier$var$coord[., ]} %>%
+  as.data.frame %>%
+  # Scale variables Dim 1 and Dim 2 to the same range as samples 
+  dplyr::mutate(`Dim 1` = scale_range(`Dim 1`,
+                                      c(min(mca.skin.barrier.ind.clustering$`Dim 1`),
+                                        max(mca.skin.barrier.ind.clustering$`Dim 1`))),
+                `Dim 2` = scale_range(`Dim 2`,
+                                      c(min(mca.skin.barrier.ind.clustering$`Dim 2`),
+                                        max(mca.skin.barrier.ind.clustering$`Dim 2`))),
+                variable = row.names(.)) %>%
+  dplyr::arrange(`Dim 1`, `Dim 2`) %>%
+  dplyr::mutate(label = 1:nrow(.))
+
+saveRDS(mca.skin.barrier.var, here::here("data/mca_skin_barrier_var.rds"))
+```
+```{r, eval=F, echo=F}
+mca.skin.barrier.ind.clustering <- readRDS(here::here("data/mca_skin_barrier_ind_clustering.rds"))
+mca.skin.barrier.var <- readRDS(here::here("data/mca_skin_barrier_var.rds"))
+```
+```{r, eval=F}
+hull.pamk2 <- mca.skin.barrier.ind.clustering %>%
+  dplyr::group_by(pamk2) %>%
+  slice(chull(`Dim 1`, `Dim 2`))
+
+p5 <- ggplot(mca.skin.barrier.ind.clustering, aes(x = `Dim 1`, y = `Dim 2`, color = pamk2)) +
+  geom_hline(yintercept = 0, lwd = 0.75, color = "darkgray") +
+  geom_vline(xintercept = 0, lwd = 0.75, color = "darkgray") +
+  geom_polygon(data = hull.pamk2, aes(fill = pamk2),
+               alpha = 0.25) +
+  # geom_polygon(data = hull.pamk, aes(group = pamk),
+  #              fill = "grey",
+  #              color = "grey",
+  #              alpha = 0.2) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  # stat_ellipse(lwd = 0.75) +
+  geom_segment(data = mca.skin.barrier.var,
+               aes(x = 0, y = 0,
+                   xend = `Dim 1`,
+                   yend = `Dim 2`,
+                   color = NULL),
+               arrow = arrow(type = "closed",
+                             length = unit(0.3, "line"))) +
+  geom_label_repel(data = mca.skin.barrier.var,
+                   aes(label = label,
+                       color = NULL),
+                   label.padding = 0.1,
+                   segment.color = NA) +
+  scale_color_brewer(palette = "Dark2", direction = -1) +
+  scale_fill_brewer(palette = "Dark2", direction = -1) +
+  labs(x = paste0("Dim 1 (",
+                  round(mca.skin.barrier$eig[1, 2], 1),
+                  "%)"),
+       y = paste0("Dim 2 (",
+                  round(mca.skin.barrier$eig[2, 2], 1),
+                  "%)")) +
+  theme(legend.position = "none",
+        axis.ticks = element_blank(),
+        axis.text = element_blank())
+
+p5.name <- paste0(notebook.name, "-mca_skin_barrier_biplot")
+saveRDS(p5, here::here(paste0("figs/", p5.name, ".rds")))
+
+p5.legend <- "Multiple Correspondence Analysis (MCA) of variables related to the skin barrier. The percentage of total explained variance is included in the axis labels. Points represent subjects and arrows represent the top 10 variables significantly associated with the first two MCA dimensions. Variable arrows were scaled to the subjects area. Colors represent clusters obtained by the partitioning around medoids method on the MCA space (5 components)."
+writeLines(p5.legend, file(here::here(paste0("figs/", p5.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p5.name <- paste0(notebook.name, "-mca_skin_barrier_biplot")
+p5 <- readRDS(here::here(paste0("figs/", p5.name, ".rds")))
+p5.legend <- readLines(here::here(paste0("figs/", p5.name, ".txt")))
+```
+```{r, eval = T}
+p5
+```
+
+`r p5.legend`
+
+```{r, eval = T, echo = F}
+mca.skin.barrier.var <- readRDS(here::here("data/mca_skin_barrier_var.rds"))
+```
+```{r, eval = T}
+t4 <- mca.skin.barrier.var %>%
+  dplyr::select(`MCA label` = label, Variable = variable) %>%
+  separate(Variable, c("Variable", "Value"), sep = "_")
+
+t4.name <- paste0(notebook.name, "-mca_skin_barrier_biplot_labels")
+saveRDS(t4, here::here(paste0("figs/", t4.name, ".rds")))
+
+t4.legend <- "Top 10 variables and labels significantly associated with the first two MCA dimensions."
+writeLines(t4.legend, file(here::here(paste0("figs/", t4.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+t4.name <- paste0(notebook.name, "-mca_skin_barrier_biplot_labels")
+t4 <- readRDS(here::here(paste0("figs/", t4.name, ".rds")))
+t4.legend <- readLines(here::here(paste0("figs/", t4.name, ".txt")))
+```
+```{r, eval = T}
+t4
+```
+
+`r t4.legend`
+
+Compare TEWL between MCA-based individuals clusters
+```{r, eval = T, echo = F}
+mca.skin.barrier.ind.clustering <- readRDS(here::here("data/mca_skin_barrier_ind_clustering.rds"))
+mca.skin.barrier <- readRDS(here::here("data/mca_skin_barrier.rds"))
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval = T}
+p6 <- mca.skin.barrier.ind.clustering %>%
+  left_join(data %>%
+              dplyr::select(nnid,
+                            tewl_lua_mean_temp20_25_baby3mdr,
+                            tewl_lua_mean_temp20_25_baby6mdr,
+                            tewl_lua_mean_temp20_25_baby12mdr) %>%
+              unique,
+            by = "nnid") %>%
+  gather(Variable, TEWL, tewl_lua_mean_temp20_25_baby3mdr,
+         tewl_lua_mean_temp20_25_baby6mdr,
+         tewl_lua_mean_temp20_25_baby12mdr) %>%
+  left_join(inv.vars %>%
+              select(Variable, Age, Name, ShortName),
+            by = "Variable") %>%
+  dplyr::mutate(Age = factor(Age, levels = c("3 months",
+                                             "6 months",
+                                             "12 months"))) %>%
+  ggplot(aes(x = Age, y = log2(TEWL), fill = pamk2)) +
+  geom_point(size=0.5, alpha = 0.5,
+             position = position_jitterdodge(jitter.width = 0.2)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.75) +
+  scale_fill_brewer(palette = "Dark2", direction = -1) +
+  stat_compare_means(label = "p.signif", method = "wilcox.test") +
+  labs(fill = "Cluster",
+       y = "g/m2/h (log)")
+
+p6.name <- paste0(notebook.name, "-mca_skin_barrier_clusters_tewl")
+saveRDS(p6, here::here(paste0("figs/", p6.name, ".rds")))
+
+p6.legend <- "Log-transformed Transepidermal water loss (TEWL) values at 3, 6 and 12 months of age shown for individuals clusters based on skin barrier-associated variables. Significance assessed by Wilcoxon test. *: p <= 0.05, **: p <= 0.01, ***: p <= 0.001, ****: p <= 0.0001."
+writeLines(p6.legend, file(here::here(paste0("figs/", p6.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p6.name <- paste0(notebook.name, "-mca_skin_barrier_clusters_tewl")
+p6 <- readRDS(here::here(paste0("figs/", p6.name, ".rds")))
+p6.legend <- readLines(here::here(paste0("figs/", p6.name, ".txt")))
+```
+```{r, eval = T}
+p6
+```
+
+`r p6.legend`
+
+## Get insights into outliers clinical data
+
+```{r, eval = T, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r outliers_insights, eval = F}
+t5 <- data %>%
+  dplyr::mutate(nnid = as.numeric(nnid)) %>%
+  # Filter samples with low read count
+  filter(SeqDepth > seq.depth.thres) %>%
+  # Select samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(outlier) %>%
+                          dplyr::select(SampleID) %>% unlist)) %>%
+  dplyr::select(one_of(c("nnid", as.character(unlist(inv.vars$Variable))))) %>%
+  unique %>%
+  gather(Variable, Value, -nnid) %>%
+  left_join(inv.vars %>%
+              dplyr::select(Variable, Name),
+            by = "Variable") %>%
+  dplyr::select(nnid, Variable = Name, Value) %>%
+  spread(nnid, Value)
+t5.name <- paste0(notebook.name, "-outliers_variables")
+saveRDS(t5, here::here(paste0("figs/", t5.name, ".rds")))
+
+t5.legend <- "Clinical variables related to skin microbiome samples with extremely low bacterial species diversity."
+writeLines(t5.legend, file(here::here(paste0("figs/", t5.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+t5.name <- paste0(notebook.name, "-outliers_variables")
+t5 <- readRDS(here::here(paste0("figs/", t5.name, ".rds")))
+t5.legend <- readLines(here::here(paste0("figs/", t5.name, ".txt")))
+```
+```{r, eval = T}
+t5
+```
+
+`t5.legend`
+
+## Session info
+```{r, eval = T}
+sessionInfo()
+```

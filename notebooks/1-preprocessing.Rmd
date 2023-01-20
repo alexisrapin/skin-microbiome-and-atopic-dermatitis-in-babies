@@ -1,0 +1,826 @@
+---
+title: "1 Preprocessing"
+author: "Alexis Rapin (alexis.rapin@epfl.ch)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+In this notebook, microbiome and clinical data, and their associated metadata are combined and cleaned up.
+Variables are aggregated, labeled and transformed to create a basis for further analysis.
+```{r knitr, echo=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+```{r setup, eval=TRUE, collapse=TRUE}
+notebook.name <- "1-preprocessing"
+
+# Load R packages
+suppressMessages(library(here)); packageVersion("here")
+suppressMessages(library(Hmisc)); packageVersion("Hmisc")
+suppressMessages(library(data.table)); packageVersion("data.table")
+suppressMessages(library(tidyverse)); packageVersion("tidyverse")
+suppressMessages(library(vegan)); packageVersion("vegan")
+suppressMessages(library(infotheo)); packageVersion("infotheo")
+suppressMessages(library(ggpubr)); packageVersion("ggpubr")
+suppressMessages(library(cowplot)); packageVersion("cowplot")
+suppressMessages(library(randomcoloR)); packageVersion("randomcoloR")
+
+# Load project-specific functions
+source(here::here("lib/lib.R"))
+
+# Load project variables
+load(here::here("etc/project_vars.RData"))
+
+set.seed(seed)
+
+# Set figures theme
+theme_set(theme)
+```
+
+## Import dataset
+
+Import and merge clinical data and microbiome metadata
+```{r import_and_merge, eval=F}
+# Load microbiome results from the dada2 pipeline
+seq.tab <- read.csv(seq.tab.fp)
+
+# Import 1st set of clinical data from SPSS
+data.raw <- suppressMessages(spss.get(clin.tab.fp,
+                                      use.value.labels = T)) %>%
+  clear_labels %>%
+  mutate(nnid = as.character(preventadall.code.baby.extended)) %>%
+  select(-preventadall.code.baby.extended) %>%
+  
+  # Import 2nd set of clinical data from SPSS
+  left_join(suppressMessages(spss.get(clin.tab.2.fp,
+                                      use.value.labels = T)) %>%
+              clear_labels %>%
+              mutate(participant.id.extended = pa.id) %>%
+              select(-pa.id, -allocation),
+            by = "participant.id.extended") %>%
+  
+  # Merge clinical data with microbiome metadata
+  full_join(fread(mb.metadata.fp, sep = '\t',
+                  header = T, colClasses = 'character',
+                  data.table = FALSE, showProgress = F) %>%
+              # Replace erroneous nnids in metadata
+              mutate(nnid = replace(nnid, nnid == "405201", "800601")) %>%
+              mutate(nnid = replace(nnid, nnid == "213901", "800401")) %>%
+              filter(!is.na(nnid)),
+            by = "nnid") %>%
+  
+  # Adjust sample IDs format
+  mutate(SampleID = paste0("sample.", SampleID))
+
+# Save raw dataset
+saveRDS(data.raw, here::here("data/data_raw.rds"))
+```
+
+## Cleanup and pre-process dataset
+
+Remove incomplete data and fix formattingg issues.
+Enrich the dataset with new variables (e.g. sequencing depth), bin variables and labels, apply discretization and normalization procedures.
+```{r, eval=F, echo=F}
+seq.tab <- read.csv(seq.tab.fp)
+data.raw <- readRDS(here::here("data/data_raw.rds"))
+```
+```{r general_cleanup, eval=F}
+# Identify microbiome samples not found in clinical data (mostly controls)
+mb.counts.extra <- as.data.frame(seq.tab) %>%
+  select(-one_of(intersect(names(.), data.raw$SampleID)))
+saveRDS(mb.counts.extra, here::here("data/mb_counts_extra.rds"))
+
+# Remove samples not found in clinical dataset from microbiome dataset
+# and order the samples as found in the clinical data
+mb.counts <- as.data.frame(seq.tab) %>%
+  select(one_of("sequence",
+                intersect(names(.), data.raw$SampleID))) %>%
+  {
+    .[, order(names(.))]
+  }
+saveRDS(mb.counts, here::here("data/mb_counts.rds"))
+
+# Remove non-sequenced samples from clinical dataset
+data <- data.raw %>%
+  filter(SampleID %in% names(mb.counts)) %>%
+  arrange(SampleID) %>%
+  
+  # Handle special characters in variable names
+  `names<-`(gsub("\\.+", "_", names(.))) %>%
+  
+  # Add sequencing depth
+  mutate(SeqDepth = colSums(select(mb.counts, -sequence)),
+         
+         # Combine AD and possible AD outcomes into one variable
+         rct_soft_ad_outcome = ifelse((rct_possible_ad_outcome == "Yes") | (rct_ad_outcome == "Yes"), "Yes", "No"),
+         
+         # Combine dry skin observations at all ages into one variable
+         dry_skin_any = ifelse((Dry_skin_examination_baby3mdr == "Dry skin") | (Dry_skin_examination_baby6mdr == "Dry skin") | (Dry_skin_examination_baby12mdr == "Dry skin"), "Dry skin", "Not dry skin"),
+         
+         # Combine eczema observations at all ages into one variable
+         eczema_any = ifelse((eczema_skin_examination_baby3mdr == "eczema") | (eczema_skin_examination_baby6mdr == "eczema") | (eczema_skin_examination_baby12mdr == "eczema"), "eczema", "No eczema"),
+         
+         # Include eczema observation at any age into a possible AD observation
+         possible_ad = ifelse((rct_soft_ad_outcome == "Yes") | (eczema_any == "eczema"), "Yes", "No"),
+         
+         # Combine delivery mode information into a single variable
+         delivery_mode = ifelse(delivery_newborn == "Sectio",
+                                as.character(c_section_elective_acute_partus),
+                                as.character(delivery_newborn)),
+         
+         # Combine food allergy information into a single variable
+         food_allergy = ifelse((ald_as_ige_pos_egg_3m == "yes") |
+                                 (ald_as_ige_pos_peanut_3m == "yes") | 
+                                 (ald_as_ige_pos_milk_3m == "yes") |
+                                 (ald_as_ige_pos_wheat_3m == "yes"),
+                               "yes",
+                               ifelse((ald_as_ige_pos_egg_3m == "no") &
+                                        (ald_as_ige_pos_peanut_3m == "no") & 
+                                        (ald_as_ige_pos_milk_3m == "no") &
+                                        (ald_as_ige_pos_wheat_3m == "no"),
+                                      "no", NA))
+  ) %>%
+  {
+    
+    # Discretize continuous variables
+    for(n in names(.)[sapply(., typeof) == "double"]) {
+      # Discretize using quartiles
+      .[, paste0(n, "_quartiles")] <- cut(.[, n], breaks = quantile(.[, n], na.rm = T))
+      # Discretize using equal frequencies
+      .[, paste0(n, "_disc")] <- discretize(.[, n], disc = "equalfreq")
+    }
+    .
+  } %>%
+  
+  # Correct faulty missing values entries
+  mutate(flg_mutation = ifelse(flg_mutation == "   ",
+                               NA,
+                               as.character(flg_mutation))) %>%
+  
+  # Convert characters and integers to factors
+  mutate_if(is.character, as.factor) %>%
+  mutate_if(is.integer, as.factor) %>%
+  
+  # Order ages levels
+  mutate(Age = factor(Age,
+                      levels=unique(Age)[order(as.numeric(gsub("[a-zA-Z.]", "", unique(Age))))])) %>%
+  
+  # Cleanup labels
+  mutate(Age = recode_factor(Age, day.1 = "Day 1",
+                             month.3 = "3 months",
+                             month.6 = "6 months",
+                             month.12 = "12 months"),
+         gender_baby_newborn = factor(gender_baby_newborn,
+                                      levels = unique(gender_baby_newborn)) %>%
+           recode_factor(Jente = "F", Gutt = "M"),
+         study_geo_locations_basearticle = factor(study_geo_locations_basearticle,
+                                                  levels = unique(study_geo_locations_basearticle)) %>%
+           recode_factor(`Oslo universitetssykehus` = "Oslo",
+                         `Sykehuset Østfold` = "Østfold"),
+         ald_as_spt_pos_anyintfood_36m = recode_factor(ald_as_spt_pos_anyintfood_36m,
+                                                       yes = "Yes", no = "No"),
+         nutr_breastfeed_6m = recode_factor(nutr_breastfeed_6m,
+                                            yes = "Yes", no = "No"),
+         delivery_mode = recode_factor(delivery_mode,
+                                       `Vaginal fødsel (normal)` = "VD",
+                                       `Vaginal forløsning i vann` = "VD in water",
+                                       `C-section acute` = "Emergency CS",
+                                       `C-section elective` = "Elective CS"),
+         live_urban_rural = recode_factor(live_urban_rural,
+                                          `Urban living` = "Urban",
+                                          `Rural living` = "Rural"),
+         dog_preg = recode_factor(dog_preg,
+                                  `dog during pregnancy` = "Yes",
+                                  `Not pets during pregnancy` = "No"),
+         cat_preg = recode_factor(cat_preg,
+                                  `Cat during pregnancy` = "Yes",
+                                  `Not pets during pregnancy` = "No"),
+         flg_mutation = recode_factor(flg_mutation,
+                                      yes = "Yes",
+                                      `no ` = "No"),
+         mother_atopicderm3cat = recode_factor(mother_atopicderm3cat,
+                                               `Doc dx AD` = "AD",
+                                               `Maternal atopy except doc dx AD` = "Other atopy",
+                                               `No maternal atopy` = "No atopy"),
+         father_atopicderm3cat = recode_factor(father_atopicderm3cat,
+                                               `Paternal doc dx AD` = "AD",
+                                               `Paternal atopy except doc dx AD` = "Other atopy",
+                                               `No paternal atopy` = "No atopy"),
+         mother_allergicrhinitis3cat = recode_factor(mother_allergicrhinitis3cat,
+                                                     `Maternal doc dx allergic rhinitis` = "Allergic rhinitis",
+                                                     `Maternal atopy except doc dx allergic rhinitis` = "Other atopy",
+                                                     `No maternal atopy` = "No atopy"),
+         father_allergicrhinitis3cat = recode_factor(father_allergicrhinitis3cat,
+                                                     `paternal doc dx allergic rhinitis` = "Allergic rhinitis",
+                                                     `paternal atopy except doc dx allergic rhinitis` = "Other atopy",
+                                                     `No paternal atopy` = "No atopy"),
+         mother_asthma3cat = recode_factor(mother_asthma3cat,
+                                           `Maternal doc dx asthma` = "Asthma",
+                                           `Maternal atopy except doc dx asthma` = "Other atopy",
+                                           `No maternal atopy` = "No atopy"),
+         father_asthma3cat = recode_factor(father_asthma3cat,
+                                           `paternal doc dx asthma` = "Asthma",
+                                           `paternal atopy except doc dx asthma` = "Other atopy",
+                                           `No paternal atopy` = "No atopy"),
+         mother_foodallergy3cat = recode_factor(mother_foodallergy3cat,
+                                                `Maternal doc dx allergic rhinitis` = "Food allergy",
+                                                `Maternal atopy except doc dx food allergy` = "Other atopy",
+                                                `No maternal atopy` = "No atopy"),
+         father_foodallergy3cat = recode_factor(father_foodallergy3cat,
+                                                `paternal doc dx food allergy` = "Food allergy",
+                                                `paternal atopy except doc dx food allergy` = "Other atopy",
+                                                `No paternal atopy` = "No atopy"),
+         rct_ad_outcome = recode_factor(rct_ad_outcome,
+                                        Yes = "Yes", No = "No"),
+         possible_ad = recode_factor(possible_ad,
+                                     Yes = "Yes", No = "No"),
+         ald_ad_ukwp_hr_by36m = recode_factor(ald_ad_ukwp_hr_by36m,
+                                              yes = "Yes", no = "No"),
+         Dry_skin_examination_baby3mdr = recode_factor(Dry_skin_examination_baby3mdr,
+                                                       `Dry skin` = "Yes", `Not dry skin` = "No"),
+         Dry_skin_examination_baby6mdr = recode_factor(Dry_skin_examination_baby6mdr,
+                                                       `Dry skin` = "Yes", `Not dry skin` = "No"),
+         Dry_skin_examination_baby12mdr = recode_factor(Dry_skin_examination_baby12mdr,
+                                                        `Dry skin` = "Yes", `Not dry skin` = "No"),
+         dry_skin_any = recode_factor(dry_skin_any,
+                                      `Dry skin` = "Yes", `Not dry skin` = "No"),
+         xerosis_arm_leg_extens_baby3mdr3cat = recode_factor(xerosis_arm_leg_extens_baby3mdr3cat,
+                                                             `Moderate/severe dry skin  extensors` = "Moderate-severe",
+                                                             `Mild dry skin  extensors` = "Mild",
+                                                             `Not dry skin extensors` = "None"),
+         xerosis_arm_leg_extens_baby6mdr3cat = recode_factor(xerosis_arm_leg_extens_baby6mdr3cat,
+                                                             `Moderate/severe dry skin  extensors` = "Moderate-severe",
+                                                             `Mild dry skin  extensors` = "Mild",
+                                                             `Not dry skin extensors` = "None"),
+         xerosis_arm_leg_extens_baby12mdr3cat = recode_factor(xerosis_arm_leg_extens_baby12mdr3cat,
+                                                              `Moderate/severe dry skin  extensors` = "Moderate-severe",
+                                                              `Mild dry skin  extensors` = "Mild",
+                                                              `Not dry skin extensors` = "None"),
+         eczema_skin_examination_baby3mdr = recode_factor(eczema_skin_examination_baby3mdr,
+                                                          `eczema` = "Yes",
+                                                          `No eczema` = "No"),
+         eczema_skin_examination_baby6mdr = recode_factor(eczema_skin_examination_baby6mdr,
+                                                          `eczema` = "Yes",
+                                                          `No eczema` = "No"),
+         eczema_skin_examination_baby12mdr = recode_factor(eczema_skin_examination_baby12mdr,
+                                                           `eczema` = "Yes",
+                                                           `No eczema` = "No"),
+         eczema_any = recode_factor(eczema_any,
+                                    `eczema` = "Yes",
+                                    `No eczema` = "No"))
+
+# Save the pre-processed data
+saveRDS(data, here::here("data/data.rds"))
+```
+```{r, eval=F, echo=F}
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval=T}
+# Verify that all investigation variables are available
+sum(!inv.vars$Variable %in% names(data))
+```
+
+## Filter and transform the microbiome count table
+
+Remove ASVs and samples with low number of sequences.
+```{r, eval = F, echo = F}
+mb.counts <- readRDS(here::here("data/mb_counts.rds"))
+```
+```{r microbiome_preprocessing, eval = F }
+# Select samples with sufficient sequencing depth
+mb.counts.filtered <- mb.counts %>%
+  {
+    sequence <- .$sequence
+    m <- select(., -sequence)
+    m[, colSums(m) > seq.depth.thres] %>%
+      mutate(sequence = sequence) %>%
+      return
+  }
+
+saveRDS(mb.counts.filtered, here::here("data/mb_counts_filtered.rds"))
+```
+
+Apply rarefaction
+```{r, eval = F, echo = F}
+mb.counts.filtered <- readRDS(here::here("data/mb_counts_filtered.rds"))
+```
+```{r, eval = F}
+# Apply rarefaction
+mb.counts.filtered.rar <- mb.counts.filtered %>%
+  `row.names<-`(.$sequence) %>%
+  select(-sequence) %>%
+  t %>%
+  rrarefy(seq.depth.thres) %>%
+  t %>%
+  as.data.frame %>%
+  mutate(sequence = row.names(.))
+saveRDS(mb.counts.filtered.rar, here::here("data/mb_counts_filtered_rar.rds"))
+```
+
+Curate taxonomic annotations
+```{r, eval = F}
+# Import taxonomy annotations
+levels <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+taxonomy.res <- read.csv(taxonomy.fp) %>%
+  as.data.frame %>%
+  mutate_all(as.character) %>%
+  
+  # Resolve NAs
+  mutate(Kingdom = ifelse(is.na(Kingdom), "Unknown", Kingdom)) %>%
+  {
+    for (i in 2:length(levels)) {
+      nas <- is.na(.[, levels[i]])
+      .[nas, levels[i]] <- paste0(.[nas, levels[i-1]], "_Unknown")
+    }
+    .
+  } %>%
+  
+  # Add genus level to species annotations
+  mutate(Species = ifelse((!grepl("Unknown", Genus)) & (!grepl("Unknown", Species)),
+                          paste(Genus, Species, sep = "_"), Species)) %>%
+  
+  # Remove special characters
+  mutate_all(funs(gsub("[()-/]", "", .))) %>%
+  
+  # Add taxonomic level
+  {
+    for(i in 1:length(levels)) {
+      .[, levels[i]] <- paste0("lvl", i, "__", .[, levels[i]])
+    }
+    .
+  }
+# add a unique ID (already available)
+saveRDS(taxonomy.res, here::here("data/taxonomy_res.rds"))
+```
+
+Aggregate read counts at each taxonomic levels
+```{r, eval = F, echo = F}
+taxonomy.res <- readRDS(here::here("data/taxonomy_res.rds"))
+mb.counts.filtered <- readRDS(here::here("data/mb_counts_filtered.rds"))
+mb.counts.filtered.rar <- readRDS(here::here("data/mb_counts_filtered_rar.rds"))
+```
+```{r, eval = F}
+# Aggregate counts at each taxonomic level
+levels <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species", "ID")
+mb.counts.filtered.by.tax <- lapply(levels, function(x){
+  taxonomy.res %>%
+    select(one_of("sequence", x)) %>%
+    `names<-`(c("sequence", "taxonomy")) %>%
+    right_join(mb.counts.filtered, by = "sequence") %>%
+    select(-sequence) %>%
+    group_by(taxonomy) %>%
+    summarize_all(funs(sum))
+}) %>%
+  `names<-`(levels)
+saveRDS(mb.counts.filtered.by.tax,
+        here::here("data/mb_counts_filtered_by_tax.rds"))
+
+mb.counts.filtered.rar.by.tax <- lapply(levels, function(x){
+  taxonomy.res %>%
+    select(one_of("sequence", x)) %>%
+    `names<-`(c("sequence", "taxonomy")) %>%
+    right_join(mb.counts.filtered.rar, by = "sequence") %>%
+    select(-sequence) %>%
+    group_by(taxonomy) %>%
+    summarize_all(funs(sum))
+}) %>%
+  `names<-`(levels)
+saveRDS(mb.counts.filtered.rar.by.tax,
+        here::here("data/mb_counts_filtered_rar_by_tax.rds"))
+```
+
+Standardize the count data using Hellinger transformation
+```{r, eval = F, echo = F}
+mb.counts.filtered.by.tax <- readRDS(here::here("data/mb_counts_filtered_by_tax.rds"))
+mb.counts.filtered.rar.by.tax <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax.rds"))
+```
+```{r microbiome_standardization, eval=F}
+mb.counts.filtered.by.tax.std <- mb.counts.filtered.by.tax %>%
+  lapply(function(x){
+    select(x, -taxonomy) %>%
+      decostand(method = "hellinger", MARGIN = 2) %>%
+      mutate(taxonomy = x$taxonomy)
+  })
+saveRDS(mb.counts.filtered.by.tax.std,
+        here::here("data/mb_counts_filtered_by_tax_std.rds"))
+
+mb.counts.filtered.rar.by.tax.std <- mb.counts.filtered.rar.by.tax %>%
+  lapply(function(x){
+    select(x, -taxonomy) %>%
+      decostand(method = "hellinger", MARGIN = 2) %>%
+      mutate(taxonomy = x$taxonomy)
+  })
+saveRDS(mb.counts.filtered.rar.by.tax.std,
+        here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+```
+
+Derive a taxa presence/absence matrix from non-rarefied read count table
+```{r, eval = F, echo = F}
+mb.counts.filtered.by.tax <- readRDS(here::here("data/mb_counts_filtered_by_tax.rds"))
+```
+```{r, eval = F}
+mb.pres.filtered.by.tax <- mb.counts.filtered.by.tax %>%
+  lapply(function(x){
+    select(x, -taxonomy) %>%
+      as.data.frame.matrix %>%
+      {1*(. > 0)} %>%
+      as.data.frame %>%
+      mutate(taxonomy = x$taxonomy)
+  })
+saveRDS(mb.pres.filtered.by.tax,
+        here::here("data/mb_pres_filtered_by_tax.rds"))
+```
+
+
+## Compute diversity metrics from rarefied read count table
+
+```{r, eval = F, echo = F}
+mb.counts.filtered.rar.by.tax <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax.rds"))
+```
+```{r, eval = F}
+# Compute diversity metrics (richness and Shannon diversity index)
+diversity <- mb.counts.filtered.rar.by.tax %>%
+  lapply(function(x){
+    x %>%
+      select(-taxonomy) %>%
+      {
+        data.frame(SampleID = names(.),
+                   richness = colSums(. != 0),
+                   shannon = diversity(t(.))) %>%
+          
+          # Discretize diversity variables using Fayyad and Irani's method
+          dplyr::mutate(richness_disc = unlist(discretize(richness, disc = "equalfreq")),
+                        shannon_disc = unlist(discretize(shannon, disc = "equalfreq")))
+      }
+  }) %>%
+  bind_rows(.id = "tax.level")
+
+saveRDS(diversity, here::here("data/diversity.rds"))
+```
+
+## Assess possible outliers based on the skin bacterial community diversity
+Low microbial diversity represents an abnormal collonization and may reflect infection. Samples displaying very low diversity will be removed from subsequent analyses.
+```{r, eval = F, echo = F}
+diversity <- readRDS(here::here("data/diversity.rds"))
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval = F}
+
+# Plot Species diversity across ages
+d <- diversity %>%
+  left_join(select(data, SampleID, Age), by = "SampleID") %>%
+  filter(tax.level == "ID") %>%
+  select(Age,
+         tax.level,
+         Richness = richness,
+         `Shannon diversity index` = shannon) %>%
+  melt()
+
+# Set a minimal Species richness threshold below which samples will be considered outliers, assuming that richness should not drop after Day 1
+richness.thres <- filter(d, variable == "Richness",
+                         Age == "Day 1") %>%
+  select(value) %>%
+  min
+# Record outliers sample IDs
+diversity %>%
+  filter(tax.level == "ID") %>%
+  mutate(outlier = ifelse(richness < richness.thres, T, F)) %>%
+  select(SampleID, outlier) %>%
+  saveRDS(here::here("data/outliers.rds"))
+
+p1 <- d %>%
+  filter(variable == "Richness") %>%
+  mutate(outlier = ifelse(value < richness.thres, T, F)) %>%
+  ggplot(aes(x = Age, y = value)) +
+  geom_hline(yintercept = richness.thres, lty = "dashed",
+             lwd = 0.75) +
+  geom_jitter(aes(color = outlier), size = 1, height = 0,
+              width = 0.25,
+              alpha = 0.5) +
+  labs(y = "Richness") +
+  scale_color_manual(values = c("black", "red"), guide = "none")
+
+p1.name <- paste0(notebook.name, "-diversity_outliers")
+saveRDS(p1, here::here(paste0("figs/", p1.name, ".rds")))
+
+p1.legend <- paste0("ASV richness across ages. The horizontal line depicts a richness of ", richness.thres, ".")
+writeLines(p1.legend, file(here::here(paste0("figs/", p1.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p1.name <- paste0(notebook.name, "-diversity_outliers")
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds")))
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+```
+```{r, eval = T}
+p1
+```
+
+`r p1.legend`
+
+Show outliers bacterial community composition
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r, eval = F}
+d <- mb.counts.filtered.rar.by.tax$ID %>%
+  `row.names<-`(.$taxonomy) %>%
+  # Select samples with low richness
+  select(one_of(c("taxonomy",
+                  outliers %>%
+                    filter(outlier) %>%
+                    select(SampleID) %>% unlist %>%
+                    as.character))) %>%
+  filter(rowSums(select(., -taxonomy)) != 0) %>%
+  # Convert to percent
+  mutate_at(vars(-taxonomy), function(x){
+    return(x*100/sum(x, na.rm = T))
+  }) %>%
+  # Bin low abundant species into Others
+  mutate(rowMax = apply(select(., -taxonomy), 1, max),
+         label = ifelse(rowMax <= 2, "Other", taxonomy)) %>%
+  select(-rowMax, -taxonomy) %>%
+  group_by(label) %>%
+  summarise_all(funs(sum)) %>%
+  ungroup %>%
+  melt(id.vars = c("label")) %>%
+  left_join(data %>%
+              select(variable = SampleID, Age, nnid),
+            by = "variable") %>%
+  mutate(subject = as.numeric(nnid),
+         sample.label = paste(subject, "-", Age),
+         label = factor(label, levels = c(
+           unique(label)[unique(label) != "Other"],
+           "Other"))) %>%
+  arrange(subject, Age) %>%
+  mutate(sample.label = factor(sample.label,
+                               levels = unique(sample.label)))
+
+p2 <- d %>%
+  ggplot(aes(x = sample.label, y = value, fill = label)) +
+  geom_bar(stat = "identity") +
+  labs(x = "", y = "%", fill = "") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+p2.name <- paste0(notebook.name, "-diversity_outliers_composition")
+saveRDS(p2, here::here(paste0("figs/", p2.name, ".rds")))
+
+p2.legend <- paste0("Bacterial community composition in skin microbiome samples showing extremely low bacterial species richness. Relative abundances lower than 2% are included in Other. Samples are labeled by subject and age.")
+writeLines(p2.legend, file(here::here(paste0("figs/", p2.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p2.name <- paste0(notebook.name, "-diversity_outliers_composition")
+p2 <- readRDS(here::here(paste0("figs/", p2.name, ".rds")))
+p2.legend <- readLines(here::here(paste0("figs/", p2.name, ".txt")))
+```
+```{r, eval = T}
+p2
+```
+
+`r p2.legend`
+
+Have a look at the control samples and compare with skin microbiome samples
+```{r, eval = F, echo = F}
+seq.tab <- read.csv(seq.tab.fp)
+taxonomy.res <- readRDS(here::here("data/taxonomy_res.rds"))
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r, eval = F}
+levels <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species", "ID")
+mb.counts.all.by.tax <- lapply(levels, function(x){
+  taxonomy.res %>%
+    select(one_of("sequence", x)) %>%
+    `names<-`(c("sequence", "taxonomy")) %>%
+    right_join(as.data.frame(seq.tab), by = "sequence") %>%
+    select(-sequence) %>%
+    group_by(taxonomy) %>%
+    summarize_all(funs(sum))
+}) %>%
+  `names<-`(levels)
+saveRDS(mb.counts.all.by.tax,
+        here::here("data/mb_counts_all_by_tax.rds"))
+```
+```{r, eval=F, echo=F}
+mb.counts.all.by.tax <- readRDS(here::here("data/mb_counts_all_by_tax.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval=F}
+# Minimal number of reads per sample
+min.reads.thres <- 1000
+# Minimal maximal relative abundance for not being included in "Other" (%)
+other.max.thres <- 30
+# Minimal prevalence per facet for not being included in "Other"
+other.prev.thres <- 0.85
+
+d <- mb.counts.all.by.tax$ID %>%
+  filter(rowSums(select(., -taxonomy)) > 0) %>%
+  select(one_of(c("taxonomy",
+                  names(select(., -taxonomy))[colSums(select(., -taxonomy)) > min.reads.thres]))) %>%
+  # Convert to percent
+  mutate_at(vars(-taxonomy), function(x){
+    # return(x)
+    return(x*100/sum(x, na.rm = T))
+  }) %>%
+  melt(id.vars = c("taxonomy")) %>%
+  select(SampleID = variable, taxonomy, value) %>%
+  # Add sample source information
+  left_join(data %>%
+              select(SampleID, Age, nnid),
+            by = "SampleID") %>%
+  # Tag controls and outliers
+  mutate(facet = ifelse(!is.na(Age), 
+                        ifelse(SampleID %in% (outliers %>%
+                                                filter(outlier == TRUE) %>%
+                                                select(SampleID) %>%
+                                                unlist), "Outliers",
+                               as.character(Age)),
+                        ifelse(grepl("Ctrl", SampleID),
+                               "Controls", NA))) %>%
+  filter(!is.na(facet)) %>%
+  mutate(facet = recode_factor(facet, `Day 1` = "Day 1",
+                               `3 months` = "3 months",
+                               `6 months` = "6 months",
+                               `12 months` = "12 months",
+                               Outliers = "Outliers",
+                               Controls = "Controls")) %>%
+  # Bin low abundant, poorly prevalent species into "Other"
+  group_by(taxonomy) %>%
+  mutate(max = max(value, na.rm = T),
+         label = ifelse(max <= other.max.thres, "Other", as.character(taxonomy))) %>%
+  ungroup %>%
+  group_by(facet, taxonomy) %>%
+  mutate(prev = sum(value != 0)/n()) %>%
+  ungroup %>%
+  group_by(taxonomy) %>%
+  mutate(max.prev = max(prev),
+         label = ifelse(max.prev >= other.prev.thres, as.character(taxonomy), label)) %>%
+  ungroup %>%
+  group_by(facet, SampleID, label) %>%
+  summarise(value = sum(value)) %>%
+  ungroup %>%
+  # arrange species by mean abundance
+  group_by(label) %>%
+  mutate(mean = mean(value)) %>%
+  ungroup %>%
+  arrange(mean) %>%
+  mutate(label = factor(label, levels = c("Other",
+                                          unique(label) %>%
+                                            {.[. != "Other"]}))) %>%
+  # arrange samples within facets using hierarchical clustering
+  {
+    lapply(.$facet %>% levels, function(x){
+      filter(., facet == x) %>%
+        left_join(select(., label, SampleID, value) %>%
+                    spread(SampleID, value) %>%
+                    select(-label) %>%
+                    {
+                      data.frame(SampleID = names(.),
+                                 order = t(.) %>%
+                                   vegdist(method = "bray") %>%
+                                   hclust(method = "ward.D2") %>%
+                                   {.$order})
+                    },
+                  by = "SampleID")
+    }) %>%
+      bind_rows()
+  }
+
+
+p3 <- d %>%
+  ggplot(aes(x = order, y = value, fill = label)) +
+  facet_wrap(~facet, nrow = 1, scales = "free_x") +
+  geom_bar(stat = "identity") +
+  labs(x = "", y = "%", fill = "") +
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_fill_manual(values = distinctColorPalette(d$label %>% unique %>% length))
+
+p3.name <- paste0(notebook.name, "-controls_composition")
+saveRDS(p3, here::here(paste0("figs/", p3.name, ".rds")))
+
+p3.legend <- paste0("Bacterial community composition in skin microbiome and control samples showing more than ", min.reads.thres, " sequencing reads. Species which both maximal observed abundance is lower than ", other.max.thres, "% and observed prevalence per is lower than ", other.prev.thres, " at all ages are labeled as Other.")
+writeLines(p3.legend, file(here::here(paste0("figs/", p3.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p3.name <- paste0(notebook.name, "-controls_composition")
+p3 <- readRDS(here::here(paste0("figs/", p3.name, ".rds")))
+p3.legend <- readLines(here::here(paste0("figs/", p3.name, ".txt")))
+```
+```{r, eval = T}
+p3
+```
+
+`r p3.legend`
+
+## Impute missing values in investigatory variables
+
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval=F}
+library(missForest)
+
+# Select categorical investigation variables
+vars <- data %>%
+  # Filter samples with low read count
+  filter(SeqDepth > seq.depth.thres) %>%
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          {.$SampleID})) %>%
+  dplyr::select(nnid, Age, one_of(inv.vars %>%
+                                    {as.character(.$Variable)})) %>%
+  dplyr::select_if(is.factor) %>%
+  {.[!duplicated(.), ]} %>%
+  # Ignore variables with < 10 samples per (non-NA) level in one or more time point
+  {
+    min.n <- sapply(dplyr::select(., -Age, -nnid),
+                    function(x){
+                      data.frame(Age = .$Age, var = x) %>%
+                        drop_na() %>%
+                        dplyr::group_by(Age, var) %>%
+                        dplyr::summarise(count = n()) %>%
+                        {min(.$count)}
+                    })
+    names(min.n)[min.n >= 10]
+  }
+
+inv.vars.categ.selected <- inv.vars %>%
+  filter(Variable %in% vars)
+saveRDS(inv.vars.categ.selected, here::here("data/inv_vars_categ_selected.rds"))
+
+data.imputed <- data %>%
+  # Filter samples with low read count
+  filter(SeqDepth > seq.depth.thres) %>%
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          {.$SampleID})) %>%
+  dplyr::select(one_of("nnid", vars)) %>%
+  {.[!duplicated(.), ]} %>%
+  {
+    nnid <- .$nnid
+    out <- select(., -nnid) %>%
+      missForest(variablewise = TRUE, maxiter = 50)
+    out$ximp <- out$ximp %>%
+      mutate(nnid = nnid)
+    out
+  }
+
+saveRDS(data.imputed, here::here("data/data_imputed.rds"))
+```
+```{r, eval = F, echo = F}
+data.imputed <- readRDS(here::here("data/data_imputed.rds"))
+```
+```{r, eval = F}
+# Estimate imputation error based on the out-of-bag (OOB) estimate
+p <- data.frame(Variable = dplyr::select(data.imputed$ximp, -nnid) %>%
+                  names(),
+                # OOBerror_type = names(data.imputed$OOBerror),
+                OOBerror = data.imputed$OOBerror) %>%
+  left_join(inv.vars %>%
+              dplyr::select(Variable, Name),
+            by = "Variable") %>%
+  arrange(-OOBerror, Name) %>%
+  mutate(Name = factor(Name, levels = unique(Name)),
+         fill = OOBerror <= 0.5) %>%
+  {
+    ggplot(., aes(y = OOBerror, x = Name, fill = fill)) +
+      geom_col(width = 0.5) +
+      geom_hline(yintercept = 0.5,
+                 lty = 2,
+                 lwd = 0.75) +
+      coord_flip(expand = F) +
+      scale_fill_manual(values = c("red", "black")) +
+      labs(y = "PFC") +
+      theme(legend.position = "none",
+            axis.title.y = element_blank())
+  }
+
+p.name <- paste0(notebook.name, "-data_imputation_error")
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Out-of-bag (OOB) error estimates for the imputation of missing values. PFC: proportion of falsely classified entries."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- paste0(notebook.name, "-data_imputation_error")
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+## Session info
+```{r, eval = T}
+sessionInfo()
+```

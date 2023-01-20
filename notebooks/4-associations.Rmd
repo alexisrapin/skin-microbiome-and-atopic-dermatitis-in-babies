@@ -1,0 +1,2286 @@
+---
+title: "4.2 associations"
+author: "Alexis Rapin (alexis.rapin@epfl.ch)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+In this notebook, associations between selected investigation variables are assessed.
+
+```{r knitr, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r setup, eval=TRUE, collapse=TRUE}
+notebook.name <- "4_2-associations"
+
+# Load R packages
+suppressMessages(library(here)); packageVersion("here")
+suppressMessages(library(tidyverse)); packageVersion("tidyverse")
+suppressMessages(library(ggpubr)); packageVersion("ggpubr")
+suppressMessages(library(epitools));
+suppressMessages(library(vegan)); packageVersion("vegan")
+suppressMessages(library(spls)); packageVersion("spls")
+suppressMessages(library(pheatmap));
+suppressMessages(library(Hmisc));
+
+# Load project-specific functions
+source(here::here("lib/lib.R"))
+source(here::here("lib/zi_kw_test.R"))
+source(here::here("lib/zi_wilcox_test.R"))
+
+# Load project variables
+load(here::here("etc/project_vars.RData"))
+
+set.seed(seed)
+
+# Set figures theme
+theme_set(theme)
+```
+
+```{r prepare_dataset, eval=F}
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+
+data.imputed <- readRDS(here::here("data/data_imputed.rds"))
+
+inv.vars.categ.selected <- readRDS(here::here("data/inv_vars_categ_selected.rds"))
+
+mb.data.prepared.associations <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  `row.names<-`(.$taxonomy) %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(outliers %>%
+                         filter(!outlier) %>%
+                         dplyr::select(SampleID) %>%
+                         unlist %>%
+                         as.character)) %>%
+  # Ignore organelles and known contaminants
+  {.[!str_detect(row.names(.), "Chloroplast"), ]} %>%
+  {.[!str_detect(row.names(.), "Mitochondri"), ]} %>%
+  {.[!str_detect(row.names(.), "Burkholder"), ]} %>%
+  {.[rowSums(.) > 0, ]} %>%
+  as.matrix %>%
+  t %>%
+  as.data.frame %>%
+  dplyr::mutate(SampleID = row.names(.))
+saveRDS(mb.data.prepared.associations,
+        here::here("data/mb_data_prepared_associations.rds"))
+
+data.prepared.associations <- data %>%
+  left_join(mca.skin.barrier.ind.clustering %>%
+              dplyr::select(nnid, `Skin barrier` = pamk),
+            by = "nnid")
+saveRDS(data.prepared.associations,
+        here::here("data/data_prepared_associations.rds"))
+
+data.imputed.prepared.associations <- data.imputed$ximp %>%
+  left_join(mca.skin.barrier.ind.clustering %>%
+              dplyr::select(nnid, `Skin barrier` = pamk),
+            by = "nnid")
+saveRDS(data.imputed.prepared.associations,
+        here::here("data/data_imputed_prepared_associations.rds"))
+
+inv.vars.prepared.associations <- inv.vars.categ.selected %>%
+  dplyr::select(Variable, Factor, Name,
+                ShortName,
+                SubCategory, Age) %>%
+  rbind(data.frame(Variable = "Skin barrier",
+                   Factor = "Skin barrier",
+                   Name = "Skin barrier cluster",
+                   ShortName = "cluster",
+                   SubCategory = "General",
+                   Age = NA))
+saveRDS(inv.vars.prepared.associations,
+        here::here("data/inv_vars_prepared_associations.rds"))
+```
+
+## Assess the associations between skin bacterial composition and investigation variables
+
+Use PerMANOVA on Bray-Curtis dissimilarity
+
+Per time point and variable separately (only a few of individuals have full non-missing records for all investigatory variables, therefore variables are tested independently).
+
+Use only full sample sets across all time points.
+
+```{r, eval = F}
+data.prepared.associations <- readRDS(here::here("data/data_prepared_associations.rds"))
+data.imputed.prepared.associations <- RDS(here::here("data/data_imputed_prepared_associations.rds"))
+mb.data.prepared.associations <- readRDS(here::here("data/mb_data_prepared_associations.rds"))
+mca.skin.barrier.ind.clustering <- readRDS(here::here("data/mca_skin_barrier_ind_clustering.rds"))
+inv.vars.prepared.associations <- readRDS(here::here("data/inv_vars_prepared_associations.rds"))
+```
+```{r, eval = F}
+vars <- as.character(inv.vars.prepared.associations$Variable)
+
+d <- mb.data.prepared.associations %>%
+  left_join(data %>%
+              dplyr::select(SampleID, nnid, Age),
+            by = "SampleID") %>%
+  left_join(data.imputed.prepared.associations %>%
+              dplyr::select(one_of("nnid", vars)),
+            by = "nnid")
+
+t <- d %>%
+  dplyr::select(one_of("SampleID", "nnid", "Age", vars)) %>%
+  gather(Variable, Label, one_of(vars)) %>%
+  dplyr::group_by(Age, Variable, Label) %>%
+  dplyr::summarise(n = n()) %>%
+  dplyr::ungroup() %>%
+  left_join(inv.vars.prepared.associations %>%
+              dplyr::select(Factor, Variable, Name),
+            by = "Variable") %>%
+  dplyr::select(Factor, Variable = Name, Age, Label, n) %>%
+  # filter(!is.na(Factor)) %>%
+  dplyr::arrange(Factor, Variable, Age, n)
+
+t.name <- paste0(notebook.name, "-inv_vars_class_summary_by_age")
+saveRDS(t,
+        here::here(paste0("figs/", t.name, ".rds")))
+data.table::fwrite(t,
+                   here::here(paste0("figs/", t.name, ".txt")))
+
+# PerMANOVA for all investigation variable per time point
+adonis.out.vars.all <- lapply(levels(data$Age), function(x){
+  
+  d1 <- filter(d, Age == x) %>%
+    dplyr::select(-Age, -nnid) %>%
+    drop_na()
+  
+  values <- dplyr::select(d1, -one_of("SampleID",
+                                      vars)) %>%
+    {.[, colSums(.) != 0]}
+  
+  labels <- dplyr::select(d1, one_of("SampleID",
+                                     vars))
+  
+  f <- paste0("values ~ (`",
+              paste0(vars[!vars %in% c("delivery_mode",
+                                       "allocation")],
+                     collapse = "`+`"),
+              "`)*delivery_mode*allocation") %>%
+    as.formula()
+  adonis(f,
+         data = labels,
+         method = "bray",
+         permutations = 10000)$aov.tab %>%
+    as.data.frame %>%
+    mutate(Term = row.names(.),
+           Age = x)
+}) %>%
+  bind_rows
+
+saveRDS(adonis.out.vars.all, here::here("data/adonis_out_vars_all.rds"))
+```
+```{r, eval=F, echo=F}
+adonis.out.vars.all <- readRDS(here::here("data/adonis_out_vars_all.rds"))
+```
+```{r, eval=F}
+t1 <- adonis.out.vars.all %>%
+  format_adonis_output_table() %>%
+  dplyr::mutate(Age = factor(Age, levels = c("Day 1",
+                                             "3 months",
+                                             "6 months",
+                                             "12 months"))) %>%
+  dplyr::arrange(Age, Term) %>%
+  dplyr::select(Age, Term, Df, SumsOfSqs, MeanSqs, F.Model, R2, `Pr(>F)`, Sig)
+
+t1.name <- "4_2-associations-vars_all_perMANOVA"
+saveRDS(t1, here::here(paste0("figs/", t1.name, ".rds")))
+write.csv(t1, here::here(paste0("figs/", t1.name, ".txt")),
+          quote = F, row.names = F)
+
+t1.legend <- paste0("Permutational Multivariate Analysis of Variance (perMANOVA) based on bacterial composition at the ASV level and Bray-Curtis dissimilarity with 10,000 permutations. Values shown for variables including at least 10 individual per group and a multiplicative model accounting for differences in delivery mode.")
+writeLines(t1.legend, file(here::here(paste0("figs/", t1.name, "_legend.txt"))))
+```
+```{r, eval=T, echo=F}
+t1.name <- "4_2-associations-vars_all_perMANOVA"
+t1 <- readRDS(here::here(paste0("figs/", t1.name, ".rds")))
+t1.legend <- readLines(here::here(paste0("figs/", t1.name, "_legend.txt")))
+```
+```{r, eval=T}
+t1 %>%
+  filter(`Pr(>F)` <= 0.05)
+```
+
+`r t1.legend`
+
+
+## Assess importance of individual investigation variables
+```{r, eval=F}
+adonis.out.vars.all <- readRDS(here::here("data/adonis_out_vars_all.rds"))
+
+d <- adonis.out.vars.all %>%
+  filter(Term != "Total") %>%
+  dplyr::mutate(`Pr(>F)` = ifelse(Term == "Residuals",
+                                  0,
+                                  `Pr(>F)`),
+                Age = factor(Age, levels = c("Day 1",
+                                             "3 months",
+                                             "6 months",
+                                             "12 months"))) %>%
+  dplyr::mutate(Term = ifelse((`Pr(>F)` > 0.05) | str_detect(.$Term, ":"),
+                              "Other",
+                              Term)) %>%
+  dplyr::group_by(Age, Term) %>%
+  dplyr::summarise(R2 = sum(R2)) %>%
+  ungroup %>%
+  dplyr::arrange(-R2) %>%
+  left_join(select(inv.vars, Term = Variable, Name)) %>%
+  dplyr::mutate(Name = ifelse(is.na(Name),
+                              as.character(Term), as.character(Name)),
+                Name = factor(Name,
+                              levels = c(unique(Name[!Name %in% c("Other", "Residuals")]),
+                                         "Other", "Residuals")),
+                facet = ifelse(Term %in% c("Other", "Residuals"),
+                               "Other",
+                               "Main contributors"))
+
+p0 <- d %>%
+  ggplot(aes(x = Age, y = R2, fill = Name)) +
+  theme +
+  facet_grid(facet~., scales = "free_y") +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c(colorRampPalette(brewer.pal(9, "Set1"))(11),
+                               "gray80", "gray40"),
+                    labels = function(x) str_wrap(x, width = 17),
+                    guide = guide_legend(ncol = 2)) +
+  labs(fill = "Variable") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.position = "bottom",
+        legend.key.width = unit(2, "mm"),
+        legend.key.height = unit(2, "mm"))
+
+p1 <- d %>%
+  filter(facet != "Other") %>%
+  ggplot(aes(x = Age, y = R2, fill = Name)) +
+  theme +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = colorRampPalette(brewer.pal(9, "Set1"))(11),
+                    labels = function(x) str_wrap(x, width = 17),
+                    guide = guide_legend(ncol = 2)) +
+  labs(fill = "Variable") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        plot.margin = unit(c(2, 2, -11, 2), "mm"),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.position = "bottom",
+        legend.key.width = unit(2, "mm"),
+        legend.key.height = unit(2, "mm"),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) +
+  coord_cartesian(clip = "off")
+
+p2 <- d %>%
+  filter(facet == "Other") %>%
+  ggplot(aes(x = Age, y = R2, fill = Name)) +
+  theme +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("gray80", "gray40"),
+                    guide = guide_legend(reverse = F)) +
+  labs(fill = "Variable") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        legend.background = element_blank(),
+        legend.key = element_blank()) +
+  coord_cartesian(clip = "off")
+
+p.collegend <- cowplot::get_legend(p0)
+
+p <- cowplot::plot_grid(cowplot::plot_grid(p1 +
+                                             theme(legend.position = "none",
+                                                   plot.margin = unit(c(2, 0, 0, 2), "mm"),
+                                                   axis.text.x = element_blank(),
+                                                   axis.ticks.x = element_blank(),
+                                                   axis.title.x = element_blank(),
+                                                   panel.background = element_blank(),
+                                                   plot.background = element_blank()),
+                                           p2 +
+                                             theme(legend.position = "none",
+                                                   plot.margin = unit(c(0, 0, 0, 2), "mm"),
+                                                   axis.title.x = element_blank(),
+                                                   panel.background = element_blank(),
+                                                   plot.background = element_blank()),
+                                           ncol = 1,
+                                           rel_heights = c(1.2, 1),
+                                           align = "v",
+                                           axis = "lr"),
+                        ncol = 1,
+                        rel_heights = c(2, 1),
+                        p.collegend)
+
+p.name <- paste0(notebook.name, "-permanova_variance_explained_barplot")
+saveRDS(p, here::here(paste0("figs/", p.name, "_supp.rds")))
+saveRDS(p1, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Proportion of skin bacterial community composition variance explained by investigation variable. Variables significantly associated with bacterial composition are included in the top facet (perMANOVA p-value <= 0.05). Other variables are represented in the Other group."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+```
+```{r, eval=T, echo=F}
+p.name <- paste0(notebook.name, "-permanova_variance_explained_barplot")
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, "_legend.txt")))
+```
+```{r, eval=T}
+p
+```
+
+`r p.legend`
+
+
+```{r, eval = F}
+t.name <- paste0(notebook.name, "-inv_vars_class_summary_by_age")
+t <- readRDS(here::here(paste0("figs/", t.name, ".rds")))
+
+t.ref <- readRDS(here::here(paste0("figs/2-dataset_characteristics-inv_vars_class_summary.rds"))) %>%
+  left_join(drop_na(.) %>%
+              dplyr::group_by(Factor, Variable) %>%
+              dplyr::arrange(n, .by_group = T) %>%
+              dplyr::mutate(Label.id = 1:n()) %>%
+              dplyr::ungroup()) %>%
+  dplyr::select(Factor, Variable, Label, Label.id)
+
+p <- t %>%
+  left_join(t.ref) %>%
+  dplyr::group_by(Age, Factor, Variable) %>%
+  dplyr::arrange(n, .by_group = T) %>%
+  dplyr::mutate(Label.id = ifelse(is.na(Label.id),
+                                  1:n(),
+                                  Label.id)) %>%
+  dplyr::ungroup() %>%
+  left_join(data.frame(Name = dplyr::select(data.imputed$ximp, -nnid) %>%
+                         names(),
+                       OOBerror = data.imputed$OOBerror) %>%
+              left_join(inv.vars %>%
+                          dplyr::select(Name = Variable, Variable = Name),
+                        by = "Name"),
+            by = "Variable") %>%
+  dplyr::arrange(-OOBerror, Variable) %>%
+  dplyr::mutate(Variable = factor(Variable, levels = unique(Variable))) %>%
+  dplyr::arrange(Variable, Label.id) %>%
+  dplyr::mutate(Label.id = factor(Label.id, levels = sort(unique(Label.id)))) %>%
+  ggplot(aes(x = Variable, y = n, fill = Label.id)) +
+  facet_grid(~Age) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "BuGn", na.value = "grey",
+                    direction = -1) +
+  labs(fill = "Label") +
+  coord_flip(expand = F) +
+  theme(axis.title.y = element_blank())
+
+p.name <- paste0(notebook.name, "-inv_vars_class_summary_plot_per_age")
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Summary of investigatory variables characteristics used in perMANOVA."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- paste0(notebook.name, "-inv_vars_class_summary_plot_per_age")
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+```{r, eval=F}
+d <- readRDS(here::here(paste0("figs/4_2-associations-vars_all_perMANOVA.rds"))) %>%
+  filter(`Pr(>F)` <= 0.05) %>%
+  separate(Term, into = c("Variable", "Interaction"), sep = ":") %>%
+  left_join(inv.vars %>%
+              dplyr::select(Variable, VariableFactor = Factor,
+                            VariableAge = Age)) %>%
+  left_join(inv.vars %>%
+              dplyr::select(Interaction = Variable,
+                            InteractionFactor = Factor)) %>%
+  dplyr::mutate(VariableFactor = recode_factor(VariableFactor,
+                                               Parental = "Environmental factors, parental factors and breast-feeding",
+                                               Environment = "Environmental factors, parental factors and breast-feeding",
+                                               `Breast-feeding` = "Environmental factors, parental factors and breast-feeding",
+                                               `Delivery mode` = "Delivery mode",
+                                               Sex = "Sex",
+                                               `Skin barrier` = "AD, eczema, dry skin, impaired skin barrier and allergy",
+                                               Allergy = "AD, eczema, dry skin, impaired skin barrier and allergy"),
+                VariableAge = ifelse(VariableFactor %in% c("Environmental factors, parental factors and breast-feeding",
+                                                           "Delivery mode"),
+                                     NA,
+                                     as.character(VariableAge)),
+                VariableAge = factor(VariableAge,
+                                     levels = c("Day 1",
+                                                "3 months",
+                                                "6 months",
+                                                "12 months",
+                                                "36 months")))
+
+p <- d %>%
+  filter(is.na(Interaction)) %>%
+  dplyr::group_by(Age, VariableFactor, VariableAge) %>%
+  dplyr::summarise(evidence = T) %>%
+  ggplot(aes(x = Age, y = VariableAge, fill = evidence)) +
+  facet_grid(VariableFactor~., scales = "free", space = "free") +
+  geom_tile() +
+  scale_fill_manual(values = c("black", "white")) +
+  labs(x = "Age (microbiome sampling)",
+       y = "Age (inv. variable observation)") +
+  coord_cartesian(expand = F, clip = "off") +
+  theme(legend.position = "none")
+
+p.name <- paste0(notebook.name, "-vars_all_perMANOVA_summary")
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Summary of statistical evidences linking investigatory variables and the skin microbiome."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- paste0(notebook.name, "-vars_all_perMANOVA_summary")
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+
+### Compare diversity in variables showing association with the skin microbiome
+
+This analysis does not rely on imputed values.
+
+```{r, eval=F, echo=F}
+data.prepared.associations <- readRDS(here::here("data/data_prepared_associations.rds"))
+adonis.out.vars.all <- readRDS(here::here("data/adonis_out_vars_all.rds"))
+diversity <- readRDS(here::here("data/diversity.rds"))
+inv.vars.prepared.associations <- readRDS(here::here("data/inv_vars_prepared_associations.rds"))
+```
+```{r diversity, eval=F}
+selected.diversity.data <- data.prepared.associations %>%
+  dplyr::select(nnid,
+                one_of(adonis.out.vars.all %>%
+                         filter(Term %in% names(data.prepared.associations),
+                                `Pr(>F)` <= 0.05) %>%
+                         {.$Term}),
+  ) %>%
+  {.[!duplicated(.), ]} %>%
+  left_join(data %>% select(nnid, SampleID, Age)) %>%
+  left_join(diversity %>%
+              filter(tax.level == "ID") %>%
+              dplyr::select(SampleID, Richness = richness,
+                            SDI = shannon),
+            by = "SampleID") %>%
+  gather(Variable, group, -Richness, -SDI, -Age, -SampleID,
+         factor_key = T) %>%
+  gather(Diversity, value, -Variable, -group, -Age, -SampleID,
+         factor_key = T) %>%
+  drop_na() %>%
+  dplyr::mutate(Age = factor(Age, levels = c("Day 1",
+                                             "3 months",
+                                             "6 months",
+                                             "12 months"))) %>%
+  left_join(select(inv.vars.prepared.associations,
+                   Variable,
+                   Factor,
+                   SubCategory,
+                   Name),
+            by = "Variable") %>%
+  filter(., SampleID %in% (outliers %>%
+                             filter(outlier == FALSE) %>%
+                             select(SampleID) %>%
+                             unlist)) %>%
+  dplyr::arrange(Factor) %>%
+  dplyr::mutate(Name = factor(Name, levels = unique(Name)),
+                Variable = as.factor(Variable),
+                group = as.factor(group)) %>%
+  # Add p-values using Kruskall test
+  left_join(.,
+            dplyr::group_by(., Variable, Age, Diversity) %>%
+              do(kruskall.out = kruskal.test(value~group, data = .)) %>%
+              dplyr::summarise(Variable, Age, Diversity,
+                               p.value = kruskall.out$p.value) %>%
+              ungroup,
+            by = c("Variable", "Age", "Diversity"))
+saveRDS(selected.diversity.data, here::here("data/selected_diversity_data.rds"))
+```
+```{r, eval=F, echo=F}
+selected.diversity.data <- readRDS(here::here("data/selected_diversity_data.rds"))
+```
+```{r, eval=F}
+div.var.levels <- c("Delivery mode",
+                    "Birth location",
+                    "Dog",
+                    "Breastfeeding at 6 months",
+                    "Dry skin at 3 months",
+                    "Dry skin on limbs at 3 months",
+                    "TEWL at 3 months (Qs)",
+                    "TEWL at 6 months (Qs)",
+                    "AD by 12 months",
+                    "Maternal AD",
+                    "Maternal food allergy")
+
+p.list <- selected.diversity.data %>%
+  filter(!Variable %in% c("delivery_mode")) %>%
+  dplyr::mutate(Name = factor(Name, levels = div.var.levels),
+                group = factor(group,
+                               levels = swap(levels(group), "Other atopy", "No atopy") %>%
+                                 swap("Yes", "No"))) %>%
+  # Select only variables with sign. diversity variations
+  dplyr::group_by(Name) %>%
+  dplyr::mutate(min.p.value = min(p.value, na.rm = T)) %>%
+  ungroup %>%
+  filter(min.p.value <= 0.05) %>%
+  split(.$Diversity) %>%
+  lapply(function(x){
+    ymax <- max(x$value, na.rm = T)
+    ylab <- unique(x$Diversity)
+    
+    p <- ggplot(x, aes(x = group, y = value)) +
+      facet_grid(Age~Name, scales = "free_x", space = "free_x") +
+      geom_jitter(size = 0.5, alpha = 0.5) +
+      geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), alpha = 0.75) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            axis.title.x = element_blank()) +
+      labs(y = ylab) +
+      scale_y_continuous(limits = c(0, 1.1*ymax)) +
+      geom_text(data = select(x, Age, Name, p.value) %>%
+                  {.[!duplicated(.), ]} %>%
+                  dplyr::mutate(label = symnum(p.value,
+                                               corr = F, na = F,
+                                               cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+                                               symbols = c("****", "***", "**", "*", "ns"))),
+                aes(label = label),
+                y = 1.05*ymax,
+                x = 1.5)
+    
+    p.name <- paste0("4_2-associations-diversity_vars_", ylab)
+    saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+    
+    p.legend <- paste0("Associations between skin bacterial ", ylab, " and variables linked to differences in skin bacterial community composition. Statistical significance assessed by Kruskall-Wallis test. *: p <= 0.05, **: p <= 0.01, ***: p <= 0.001, ****: p <= 0.0001.")
+    writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+    
+    p
+  })
+
+p.list.name <- "4_2-associations-diversity_vars_list"
+saveRDS(p.list, here::here(paste0("figs/", p.list.name, ".rds")))
+```
+```{r, eval = T, echo = F}
+p.list.name <- "4_2-associations-diversity_vars_list"
+p.list <- readRDS(here::here(paste0("figs/", p.list.name, ".rds")))
+```
+```{r, eval = T}
+p.list
+```
+
+```{r, eval=F, echo=F}
+selected.diversity.data <- readRDS(here::here("data/selected_diversity_data.rds"))
+```
+```{r, eval=F}
+var.levels.ordered <- c("Delivery mode",
+                        "Birth location",
+                        "Dog",
+                        "Breastfeeding at 6 months",
+                        "Dry skin at 3 months",
+                        "Dry skin on limbs at 3 months",
+                        "TEWL at 3 months (Qs)",
+                        "TEWL at 6 months (Qs)",
+                        "AD by 12 months",
+                        "Maternal AD",
+                        "Maternal food allergy")
+saveRDS(var.levels.ordered, here::here("data/var_levels_ordered.rds"))
+
+p <- selected.diversity.data %>%
+  filter(!Variable %in% c("delivery_mode")) %>%
+  dplyr::mutate(Name = factor(Name, levels = var.levels.ordered),
+                group = factor(group,
+                               levels = swap(levels(group), "Other atopy", "No atopy") %>%
+                                 swap("Yes", "No"))) %>%
+  # Select only variables with sign. diversity variations
+  dplyr::group_by(Variable, Name) %>%
+  dplyr::mutate(min.p.value = min(p.value, na.rm = T)) %>%
+  ungroup %>%
+  filter(min.p.value <= 0.05) %>%
+  dplyr::group_by(Diversity) %>%
+  dplyr::mutate(ymax = max(value, na.rm = T)) %>%
+  ungroup %>%
+  {
+    ggplot(., aes(x = group, y = value)) +
+      facet_grid(Age+Diversity~Name, scales = "free", space = "free_x") +
+      geom_jitter(size = 0.5, alpha = 0.5) +
+      geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), alpha = 0.75) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            axis.title.x = element_blank()) +
+      labs(y = "Diversity") +
+      geom_blank(aes(y = 1.1*ymax)) +
+      # scale_y_continuous(limits = c(0, 1.1*ymax)) +
+      geom_text(data = select(., Age, Diversity, Name, p.value, ymax) %>%
+                  {.[!duplicated(.), ]} %>%
+                  dplyr::mutate(label = symnum(p.value,
+                                               corr = F, na = F,
+                                               cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+                                               symbols = c("****", "***", "**", "*", "ns"))),
+                aes(label = label, y = 1.05*ymax),
+                x = 1.5)
+  }
+
+p.name <- "4_2-associations-diversity_vars"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- paste0("Associations between skin bacterial diversity in terms of richness and Shannon diveristy index (SDI) and variables linked to differences in skin bacterial community composition. Statistical significance assessed by Kruskall-Wallis test. *: p <= 0.05, **: p <= 0.01, ***: p <= 0.001, ****: p <= 0.0001.")
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "4_2-associations-diversity_vars"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+```
+```{r, eval = T}
+p
+```
+```{r, eval=F, echo=F}
+selected.diversity.data <- readRDS(here::here("data/selected_diversity_data.rds"))
+var.levels.ordered <- readRDS(here::here("data/var_levels_ordered.rds"))
+```
+```{r, eval=F}
+
+p <- selected.diversity.data %>%
+  filter(!Variable %in% c("delivery_mode")) %>%
+  dplyr::mutate(Name = factor(Name, levels = var.levels.ordered),
+                group = factor(group,
+                               levels = swap(levels(group), "Other atopy", "No atopy") %>%
+                                 swap("Yes", "No"))) %>%
+  # Select only variables with sign. diversity variations
+  dplyr::group_by(Age, Name) %>%
+  dplyr::mutate(min.p.value = min(p.value, na.rm = T)) %>%
+  ungroup %>%
+  filter(min.p.value <= 0.05) %>%
+  dplyr::group_by(Diversity) %>%
+  dplyr::mutate(ymax = max(value, na.rm = T)) %>%
+  ungroup %>%
+  drop_na() %>%
+  dplyr::group_by(Name, Age, group) %>%
+  dplyr::mutate(group.label = paste0("(n=", n_distinct(SampleID), ") ", group)) %>%
+  ungroup %>%
+  dplyr::arrange(group) %>%
+  dplyr::mutate(group.label = factor(group.label, levels = unique(group.label))) %>%
+  {
+    
+    ggplot(., aes(x = group.label, y = value)) +
+      facet_grid(Diversity~Name+Age, scales = "free", space = "free_x") +
+      geom_jitter(size = 0.5, alpha = 0.5) +
+      geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), alpha = 0.75) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            axis.title.x = element_blank()) +
+      labs(y = "Diversity") +
+      geom_blank(aes(y = 1.1*ymax)) +
+      # scale_y_continuous(limits = c(0, 1.1*ymax)) +
+      geom_text(data = select(., Age, Diversity, Name, p.value, ymax) %>%
+                  {.[!duplicated(.), ]} %>%
+                  dplyr::mutate(label = symnum(p.value,
+                                               corr = F, na = F,
+                                               cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+                                               symbols = c("****", "***", "**", "*", "ns"))),
+                aes(label = label, y = 1.05*ymax),
+                x = 1.5)
+  }
+
+p.name <- "4_2-associations-diversity_vars_filtered"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- paste0("Associations between skin bacterial diversity in terms of richness and Shannon diveristy index (SDI) and variables linked to differences in skin bacterial community composition. Statistical significance assessed by Kruskall-Wallis test. *: p <= 0.05, **: p <= 0.01, ***: p <= 0.001, ****: p <= 0.0001.")
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "4_2-associations-diversity_vars_filtered"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+```
+```{r, eval = T}
+p
+```
+
+### Compare TEWL in variables showing association with the skin microbiome
+
+```{r, eval=F, echo=F}
+data.prepared.associations <- readRDS(here::here("data/data_prepared_associations.rds"))
+# adonis.out.vars <- readRDS(here::here("data/adonis_out_vars.rds"))
+adonis.out.vars.all <- readRDS(here::here("data/adonis_out_vars_all.rds"))
+```
+```{r tewl, eval=F}
+
+selected.tewl.data <- data.prepared.associations %>%
+  filter(., SampleID %in% (outliers %>%
+                             filter(outlier == FALSE) %>%
+                             select(SampleID) %>%
+                             unlist)) %>%
+  dplyr::select(nnid, one_of(adonis.out.vars.all %>%
+                               filter(Term %in% names(data.prepared.associations),
+                                      !Term %in% c("delivery_mode",
+                                                   "tewl_lua_mean_temp20_25_baby3mdr_quartiles",
+                                                   "tewl_lua_mean_temp20_25_baby6mdr_quartiles",
+                                                   "tewl_lua_mean_temp20_25_baby12mdr_quartiles"),
+                                      `Pr(>F)` <= 0.05) %>%
+                               {.$Term}),
+                `3 months` = tewl_lua_mean_temp20_25_baby3mdr,
+                `6 months` = tewl_lua_mean_temp20_25_baby6mdr,
+                `12 months` = tewl_lua_mean_temp20_25_baby12mdr) %>%
+  {.[!duplicated(.), ]} %>%
+  gather(Variable, value, -nnid, -`3 months`,
+         -`6 months`,
+         -`12 months`,
+         factor_key = T) %>%
+  gather(Age, TEWL, -nnid, -Variable, -value,
+         factor_key = T) %>%
+  drop_na() %>%
+  dplyr::mutate(Age = factor(Age, levels = c("3 months",
+                                             "6 months",
+                                             "12 months"))) %>%
+  left_join(dplyr::select(inv.vars,
+                          Variable,
+                          Factor,
+                          SubCategory,
+                          Name),
+            by = "Variable") %>%
+  dplyr::arrange(Factor) %>%
+  dplyr::mutate(Name = factor(Name, levels = unique(Name)),
+                Variable = as.factor(Variable),
+                value = as.factor(value)) %>%
+  # Add p-values using Kruskall test
+  left_join(.,
+            dplyr::group_by(., Variable, Age) %>%
+              dplyr::mutate(TEWL = log2(TEWL+1)) %>%
+              do(kruskall.out = kruskal.test(TEWL~value, data = .)) %>%
+              dplyr::summarise(Variable, Age, p.value = kruskall.out$p.value) %>%
+              ungroup,
+            by = c("Variable", "Age"))
+saveRDS(selected.tewl.data, here::here("data/selected_tewl_data.rds"))
+```
+```{r, eval=F, echo=F}
+selected.tewl.data <- readRDS(here::here("data/selected_tewl_data.rds"))
+var.levels.ordered <- readRDS(here::here("data/var_levels_ordered.rds"))
+```
+```{r, eval=F}
+p <- selected.tewl.data %>%
+  dplyr::mutate(Name = factor(Name, levels = var.levels.ordered),
+                value = factor(value,
+                               levels = swap(levels(value), "Other atopy", "No atopy") %>%
+                                 swap("Yes", "No") %>%
+                                 swap("Mild", "Moderate-severe"))) %>%
+  # Select only variables with sign. TEWL variations
+  dplyr::group_by(Name) %>%
+  dplyr::mutate(min.p.value = min(p.value, na.rm = T)) %>%
+  ungroup %>%
+  filter(min.p.value <= 0.05) %>%
+  dplyr::group_by(Name, value) %>%
+  dplyr::mutate(value.label = paste0("(n=", n_distinct(nnid), ") ", value)) %>%
+  ungroup %>%
+  dplyr::arrange(Name, value) %>%
+  dplyr::mutate(value.label = factor(value.label, levels = unique(value.label))) %>%
+  {
+    ggplot(., aes(x = value.label, y = log2(TEWL+1))) +
+      facet_grid(Age~Name, scales = "free_x", space = "free_x") +
+      geom_jitter(size = 0.5, alpha = 0.5, width = 0.2) +
+      geom_boxplot(outlier.shape = NA, alpha = 0.75) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            axis.title.x = element_blank()) +
+      labs(y = "g/m2/h (log)") +
+      geom_text(data = select(., Age, Name, p.value) %>%
+                  {.[!duplicated(.), ]} %>%
+                  mutate(label = symnum(p.value,
+                                        corr = F, na = F,
+                                        cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+                                        symbols = c("****", "***", "**", "*", "ns"))),
+                aes(label = label),
+                x = 1.5, y = 5)
+  }
+
+p.name <- "4_2-associations-tewl_vars"
+
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Associations between TEWL and variables linked to differences in skin bacterial community composition. Statistical significance assessed by Kruskall-Wallis test. *: p <= 0.05, **: p <= 0.01, ***: p <= 0.001, ****: p <= 0.0001."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "4_2-associations-tewl_vars"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, "_legend.txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+### Extract microbiome features associated with investigation variables
+
+Extract features associated with selected investigation variables using Kruskall-Wallis test and Sparse Partial Least Squares Discriminant Analysis (SPLS-DA).
+
+#### Prepare dataset
+
+Use non-imputed data.
+
+```{r, eval = F, echo = F}
+data.prepared.associations <- readRDS(here::here("data/data_prepared_associations.rds"))
+mb.data.prepared.associations <- readRDS(here::here("data/mb_data_prepared_associations.rds"))
+# adonis.out.vars <- readRDS(here::here("data/adonis_out_vars.rds"))
+adonis.out.vars.all <- readRDS(here::here("data/adonis_out_vars_all.rds"))
+selected.tewl.data <- readRDS(here::here("data/selected_tewl_data.rds"))
+```
+```{r, eval = F}
+# Recover microbiome data
+splsda.x <- mb.data.prepared.associations %>%
+  inner_join(data.prepared.associations %>%
+               dplyr::select(SampleID, Age, nnid),
+             by = "SampleID") %>%
+  # Split microbiome samples by age
+  split(.$Age)
+saveRDS(splsda.x, here::here("data/splsda_x.rds"))
+
+# Select variables associated with microbiome variations
+splsda.y <- data.prepared.associations %>%
+  dplyr::select(one_of("nnid", "delivery_mode",
+                       adonis.out.vars.all %>%
+                         filter(Term %in% names(data.prepared.associations),
+                                Term != "delivery_mode",
+                                `Pr(>F)` <= 0.05) %>%
+                         {.$Term} %>%
+                         unique %>% unlist %>% as.character)) %>%
+  {.[!duplicated(.), ]} %>%
+  `row.names<-`(.$nnid) %>%
+  dplyr::select(-nnid) %>%
+  dplyr::select_if(is.factor)
+
+saveRDS(splsda.y, here::here("data/splsda_y.rds"))
+```
+#### Compute modified Kruskall-Wallis test for zero-inflated data and select significant taxa.
+
+```{r, eval=F, echo=F}
+splsda.x <- readRDS(here::here("data/splsda_x.rds"))
+splsda.y <- readRDS(here::here("data/splsda_y.rds"))
+```
+```{r, eval=F}
+associations.taxa.kw.p.thres <- 0.01
+save(associations.taxa.kw.p.thres,
+     file = here::here("data/associations_vars.RData"))
+
+splsda.data <- lapply(names(splsda.x), function(x){
+  lapply(names(splsda.y), function(y){
+    my <- dplyr::select(splsda.y, one_of(y)) %>%
+      drop_na() %>%
+      as.matrix %>%
+      {.[row.names(.) %in% splsda.x[[x]]$nnid, ]}
+    
+    mx <- splsda.x[[x]] %>%
+      gather(Taxa, abundance, -nnid, -SampleID, -Age) %>%
+      # Remove poorly represented taxa
+      dplyr::group_by(Taxa) %>%
+      filter(sum(abundance > 0) > 10) %>%
+      ungroup %>%
+      dplyr::group_by(SampleID) %>%
+      filter(sum(abundance) > 0) %>%
+      ungroup %>%
+      # Perform Kruskall-Wallis test for each taxa
+      inner_join(data.frame(nnid = names(my), group = as.character(my)),
+                 by = "nnid") %>%
+      left_join(split(., f = .$Taxa, drop = T) %>%
+                  lapply(function(z){
+                    if(n_distinct(z$group) == 2){
+                      split(z, f = z$group, drop = T) %>%
+                        {ziw(x = .[[1]]$abundance, y = .[[2]]$abundance)} %>%
+                        {data.frame(Taxa = unique(z$Taxa),
+                                    p.value = .$p.value,
+                                    statistic = .$statistics)}
+                    } else if(n_distinct(z$group) > 2){
+                      zikw(x = z$abundance, group = z$group) %>%
+                        {data.frame(Taxa = unique(z$Taxa),
+                                    p.value = .$p.value,
+                                    statistic = .$statistics)}
+                    }
+                  }) %>%
+                  bind_rows,
+                by = "Taxa")
+    
+    mx %>%
+      filter(p.value <= associations.taxa.kw.p.thres) %>%
+      dplyr::select(Taxa, abundance, nnid) %>%
+      spread(Taxa, abundance) %>%
+      as.data.frame %>%
+      `row.names<-`(.$nnid) %>%
+      dplyr::select(-nnid) %>%
+      as.matrix %>%
+      {
+        list(# Full abundance data including statistics
+          x.full = mx,
+          # Abundance matrix of significantly associated taxa
+          x = .,
+          # Variable class index
+          y = as.numeric(as.factor(my[row.names(.)]))
+        )
+      }
+    
+  }) %>%
+    `names<-`(names(splsda.y))
+}) %>%
+  `names<-`(names(splsda.x))
+saveRDS(splsda.data, here::here("data/splsda_data.rds"))
+```
+
+#### Summarize SPLS-DA input
+
+```{r, eval=F, echo=F}
+splsda.data <- readRDS(here::here("data/splsda_data.rds"))
+splsda.x <- readRDS(here::here("data/splsda_x.rds"))
+splsda.y <- readRDS(here::here("data/splsda_y.rds"))
+```
+```{r, eval=F, echo=F}
+splsda.input.data.summary <- lapply(names(splsda.x), function(x){
+  lapply(names(splsda.y), function(y){
+    
+    my <- dplyr::select(splsda.y, one_of(y)) %>%
+      drop_na() %>%
+      as.matrix %>%
+      {.[row.names(.) %in% splsda.x[[x]]$nnid, ]}
+    
+    data.frame(Age = x,
+               Variable = y,
+               n.samples = length(my),
+               group.size = table(my) %>%
+                 {paste0(names(.), ":", .)} %>%
+                 paste0(collapse = ","),
+               n.selected.taxa = ifelse(is.null(splsda.data[[x]][[y]]),
+                                        0,
+                                        ncol(splsda.data[[x]][[y]]$x))
+    )
+  }) %>%
+    bind_rows
+}) %>%
+  bind_rows %>%
+  mutate(Age = factor(Age, levels = c("Day 1",
+                                      "3 months",
+                                      "6 months",
+                                      "12 months")))
+
+saveRDS(splsda.input.data.summary, here::here("data/splsda_input_data_summary.rds"))
+```
+```{r, eval=T, echo=F}
+splsda.input.data.summary <- readRDS(here::here("data/splsda_input_data_summary.rds"))
+```
+```{r, eval=T}
+splsda.input.data.summary
+```
+
+#### Compute SPLS-DA
+
+```{r, eval=F, echo=F}
+splsda.data <- readRDS(here::here("data/splsda_data.rds"))
+```
+```{r, eval=F}
+splsda.out <- lapply(names(splsda.data), function(x){
+  lapply(names(splsda.data[[x]]), function(y){
+    
+    # Compute SPLS-DA only if enough features and samples are included
+    if((ncol(splsda.data[[x]][[y]]$x) >= 20) && (min(table(splsda.data[[x]][[y]]$y)) >= 10)){
+      
+      # Tune SPLS-DA parameters (eta - sparsity and - K - number of hidden components) using 10 fold cross-validation
+      cv <- cv.splsda(splsda.data[[x]][[y]]$x, splsda.data[[x]][[y]]$y,
+                      fold = 10,
+                      eta = seq(0.1, 0.9, 0.1),
+                      K = 3:10,
+                      classifier = "lda",
+                      scale.x = T)
+      
+      # Compute SPLS-DA using tuned parameters
+      f <- splsda(splsda.data[[x]][[y]]$x, splsda.data[[x]][[y]]$y,
+                  eta = cv$eta.opt, K = cv$K.opt,
+                  classifier = "lda",
+                  scale.x = T)
+      list(cv = cv,
+           f = f,
+           selected.features = colnames(f$x)[f$A])
+    } else {
+      list(cv = NULL,
+           f = NULL,
+           selected.features = colnames(splsda.data[[x]][[y]]$x))
+    }
+  }) %>%
+    `names<-`(names(splsda.data[[x]]))
+}) %>%
+  `names<-`(names(splsda.data))
+
+saveRDS(splsda.out, here::here("data/splsda_out.rds"))
+```
+
+#### Plot selected features for each investigation variable.
+
+Use heatmap when >10 selected features, boxplot otherwise.
+
+```{r, eval=F, echo=F}
+splsda.out <- readRDS(here::here("data/splsda_out.rds"))
+splsda.data <- readRDS(here::here("data/splsda_data.rds"))
+```
+```{r, eval=F}
+splsda.plots.data <- lapply(setNames(names(splsda.out), names(splsda.out)),
+                            function(x){
+                              lapply(setNames(names(splsda.out[[x]]), names(splsda.out[[x]])), function(y){
+                                
+                                if(!is.null(splsda.out[[x]][[y]][["selected.features"]])){
+                                  
+                                  d <- splsda.data[[x]][[y]]$x.full %>%
+                                    filter(Taxa %in% splsda.out[[x]][[y]][["selected.features"]])  %>%
+                                    dplyr::mutate(Variable = y)
+                                  
+                                  if(!is.null(splsda.out[[x]][[y]]$f)){
+                                    d %>%
+                                      # Add LD coefficients
+                                      left_join(coef.splsda(splsda.out[[x]][[y]]$f) %>%
+                                                  as.data.frame %>%
+                                                  # Compute euclidean norm of LD coefficients
+                                                  dplyr::mutate(Taxa = row.names(.)) %>%
+                                                  left_join(.,
+                                                            gather(., coef, value, -Taxa) %>%
+                                                              dplyr::group_by(Taxa) %>%
+                                                              dplyr::summarise(LD.norm = sqrt(sum(value^2))) %>%
+                                                              ungroup,
+                                                            by = "Taxa"),
+                                                by = "Taxa")
+                                    
+                                  } else {
+                                    d
+                                  }
+                                }
+                              })
+                            })
+
+saveRDS(splsda.plots.data, here::here("data/splsda_plots_data.rds"))
+```
+
+
+#### Select top features
+```{r, eval=F, echo=F}
+splsda.plots.data <- readRDS(here::here("data/splsda_plots_data.rds"))
+load(here::here("data/associations_vars.RData"))
+```
+```{r splsda_select_top_features, eval=F}
+# Set max number of top features to plot
+n.top.general <- 20
+n.top.special <- c("delivery_mode" = 40)
+
+
+splsda.plots.data.top.features <- lapply(setNames(names(splsda.plots.data), names(splsda.plots.data)),
+                                         function(x){
+                                           lapply(setNames(names(splsda.plots.data[[x]]), names(splsda.plots.data[[x]])),
+                                                  function(y){
+                                                    if(!is.null(splsda.plots.data[[x]][[y]])){
+                                                      n.groups <- n_distinct(splsda.plots.data[[x]][[y]]$group)
+                                                      
+                                                      # Select top Taxa
+                                                      
+                                                      if(y %in% names(n.top.special)){
+                                                        n.top <- n.top.special[y]
+                                                      } else {
+                                                        n.top <- n.top.general
+                                                      }
+                                                      
+                                                      if(!is.null(splsda.out[[x]][[y]]$f)){
+                                                        # Based on LD and p-value
+                                                        splsda.plots.data[[x]][[y]] %>%
+                                                          gather(LD, LD.value, paste0("LD", c(1:(n.groups-1))),) %>%
+                                                          dplyr::group_by(nnid, LD) %>%
+                                                          dplyr::arrange(-abs(LD.value), p.value, .by_group = T) %>%
+                                                          dplyr::mutate(rank = c(1:n())) %>%
+                                                          ungroup %>%
+                                                          dplyr::group_by(Taxa) %>%
+                                                          dplyr::mutate(min.rank = min(rank)) %>%
+                                                          ungroup %>%
+                                                          dplyr::select(-rank) %>%
+                                                          spread(LD, LD.value) %>%
+                                                          dplyr::group_by(nnid) %>%
+                                                          dplyr::arrange(min.rank, p.value) %>%
+                                                          dplyr::mutate(rank = c(1:n())) %>%
+                                                          ungroup %>%
+                                                          filter(rank <= n.top)
+                                                        
+                                                      } else {
+                                                        # Or based on p-value only
+                                                        splsda.plots.data[[x]][[y]] %>%
+                                                          dplyr::group_by(nnid) %>%
+                                                          dplyr::arrange(p.value, .by_group = TRUE) %>%
+                                                          dplyr::mutate(rank = 1:n()) %>%
+                                                          ungroup %>%
+                                                          filter(rank <= n.top)
+                                                      }
+                                                    }
+                                                  })
+                                         })
+
+saveRDS(splsda.plots.data.top.features, here::here("data/splsda_plots_data_top_features.rds"))
+```
+
+#### Plot top features
+
+```{r, eval=F, echo=F}
+splsda.plots.data.top.features <- readRDS(here::here("data/splsda_plots_data_top_features.rds"))
+load(here::here("data/associations_vars.RData"))
+```
+```{r splsda_plot_top_selected_features, eval=F}
+lapply(names(splsda.plots.data.top.features), function(x){
+  lapply(names(splsda.plots.data.top.features[[x]]), function(y){
+    
+    if(!is.null(splsda.plots.data.top.features[[x]][[y]])){
+      
+      p.name <- paste0("4_2-associations", "-splsda_", x, "_", y, "_selected_taxa")
+      
+      var.name <- filter(inv.vars, Variable == y) %>%
+        {.$Name[1]}
+      
+      d <- splsda.plots.data.top.features[[x]][[y]]
+      
+      # If enough taxa, plot heatmap
+      if(length(unique(d$Taxa)) > 10){
+        
+        annotation.col <- d %>%
+          dplyr::select(nnid, group) %>%
+          as.data.frame() %>%
+          {.[!duplicated(.), ]} %>%
+          `row.names<-`(.$nnid) %>%
+          dplyr::select(-nnid) %>%
+          `names<-`(var.name)
+        
+        annotation.row <- d %>%
+          {
+            n <- "none"
+            if(!is.null(splsda.out[[x]][[y]]$f)){
+              n <- paste0("LD",
+                          c(1:(length(levels(.$group))-1)))
+            }
+            
+            dplyr::select(., Taxa, `-log10(p-value)` = p.value, one_of(n)) %>%
+              dplyr::mutate(`-log10(p-value)` = -log10(`-log10(p-value)`+ 0.00000001)) %>%
+              as.data.frame() %>%
+              {.[!duplicated(.), ]} %>%
+              `row.names<-`(.$Taxa) %>%
+              dplyr::select(-Taxa)
+          }
+        
+        palette <- RColorBrewer::brewer.pal(11, "RdBu")
+        annotation.colors <- lapply(annotation.row, function(z){
+          limit <- max(abs(z))
+          limit.top <- ceiling(max(z)*5/limit)
+          limit.bottom <- floor(min(z)*5/limit)
+          palette[limit.bottom:limit.top+6]
+        }) %>%
+          `names<-`(names(annotation.row))
+        
+        # Scale abundance on SD, log-transform and 0-1
+        d1 <- d %>%
+          dplyr::group_by(Taxa) %>%
+          dplyr::mutate(abundance = log2(scale(abundance, center = F)+1)) %>%
+          dplyr::mutate(abundance = scale_range(abundance, c(0, 1))) %>%
+          ungroup %>%
+          dplyr::select(nnid, Taxa, abundance) %>%
+          spread(Taxa, abundance) %>%
+          as.data.frame() %>%
+          `row.names<-`(.$nnid) %>%
+          dplyr::select(-nnid) %>%
+          as.matrix() %>%
+          t
+        
+        p <- pheatmap(d1,
+                      silent = T,
+                      main = x,
+                      treeheight_row = 10,
+                      treeheight_col = 10,
+                      show_colnames = F,
+                      clustering_method = "ward.D2",
+                      height = 1.2 + 0.138*nrow(d1),
+                      width = fig.layout$height.max/25.4,
+                      annotation_col = annotation.col,
+                      annotation_row = annotation.row,
+                      annotation_colors = annotation.colors) %>%
+          {.[[4]]}
+        
+        saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+        ggsave(here::here(paste0("figs/", p.name, ".pdf")),
+               plot = ggplotify::as.ggplot(p),
+               height = 25.4*(1.2 + 0.138*nrow(d1)),
+               width = fig.layout$height.max,
+               units = "mm",
+               device = "pdf"
+        )
+        
+    
+p.legend <- paste0("Skin bacterial taxa associated with ", y, " at ", x, ". Taxa selected by kruskall-Wallis test (p-value < ", associations.taxa.kw.p.thres, ") and SPLS-DA (top ", n.top, " based on linear discriminant coefficient). Color intensities represent rarefied, standardized, scaled and log-transformed read counts.")
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+  
+} else if(length(unique(d$Taxa)) > 0) {
+  
+  p <- d %>%
+    dplyr::group_by(Taxa) %>%
+    dplyr::mutate(Abundance = log2(scale(abundance, center = F) + 1)) %>%
+    ungroup %>%
+    {
+      list(Abundance = .,
+           `Non-zero` = dplyr::group_by(., Taxa, group) %>%
+             dplyr::summarise(`Non-zero` = sum(Abundance > 0)/n_distinct(SampleID)*100) %>%
+             ungroup)
+    } %>%
+    {
+      
+      p1 <- .$Abundance %>%
+        # filter(Abundance > 0) %>%
+        {
+          ggplot(., aes(x = Taxa, y = Abundance, fill = group)) +
+            theme +
+            geom_point(data =  filter(., Abundance > 0),
+                       size = 0.5, alpha = 0.5,
+                       position = position_jitterdodge(jitter.width = 0.2)) +
+            geom_boxplot(data =  filter(., Abundance > 0),
+                         alpha = 0.75, outlier.shape = NA,
+                         position = position_dodge(preserve = "single")) +
+            stat_compare_means(label = "p.signif",
+                               method = "kruskal",
+                               hide.ns = T,
+                               label.y.npc = 0.9) +
+            theme(axis.text.x = element_blank(),
+                  axis.ticks.x = element_blank(),
+                  axis.title.x = element_blank(),
+                  legend.position = "top",
+                  plot.margin = unit(c(2, 2, 0, 2), "mm"),
+                  strip.background = element_blank(),
+                  panel.background = element_blank(),
+                  plot.background = element_blank(),
+                  legend.background = element_blank(),
+                  legend.key = element_blank()) +
+            labs(y = "Scaled abundance (log)",
+                 fill = "Label") +
+            coord_cartesian(clip = "off")
+        }
+      
+      p2 <- .$`Non-zero` %>%
+        ggplot(aes(x = Taxa, y = `Non-zero`, color = group)) +
+        theme +
+        geom_linerange(aes(ymin = 0, ymax = `Non-zero`, group = group),
+                       position = position_dodge(0.5),
+                       color = "grey20") +
+        geom_point(pch = 19, size = 1.25, alpha = 1,
+                   position = position_dodge(0.5)) +
+        theme(strip.background = element_blank(),
+              strip.text.x = element_blank(),
+              axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+              axis.title.x = element_blank(),
+              plot.margin = unit(c(0, 2, 2, 2), "mm"),
+              panel.background = element_blank(),
+              plot.background = element_blank(),
+              legend.position = "none") +
+        labs(y = "% non-zero",
+             color = "Label") +
+        scale_y_continuous(position = "right") +
+        coord_cartesian(clip = "off")
+      
+      cowplot::plot_grid(p1, p2,
+                         ncol = 1,
+                         rel_heights = c(1, 1.1),
+                         align = "v",
+                         axis = "lr")
+    }
+  
+  saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+  
+  ggsave(here::here(paste0("figs/", p.name, ".pdf")),
+         p,
+         device = "pdf",
+         width = fig.layout$width.1.5,
+         height = fig.layout$width.single,
+         units = "mm")
+  
+  p.legend <-  paste0("Skin bacterial taxa associated with ", y, " at ", x, ". Taxa selected by kruskall-Wallis test (p-value < ", associations.taxa.kw.p.thres, ") and SPLS-DA (top ", n.top, " based on linear discriminant coefficient). Taxa abundance shown as rarefied, standardized, scaled and log-transformed read counts. Boxplots in the top facet are based on non-zero abundance values and percentage of non-zero abundance values are shown in the bottom facet.")
+  writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+  
+} else {
+  # Remove possible residual files to avoid confusion
+  if(file.exists(here::here(paste0("figs/", p.name, ".pdf")))){
+    file.remove(here::here(paste0("figs/", p.name, ".pdf")))
+  }
+  if(file.exists(here::here(paste0("figs/", p.name, ".txt")))){
+    file.remove(here::here(paste0("figs/", p.name, ".txt")))
+  }
+}
+    } else{
+      # Remove possible residual files to avoid confusion
+      if(file.exists(here::here(paste0("figs/", p.name, ".pdf")))){
+        file.remove(here::here(paste0("figs/", p.name, ".pdf")))
+      }
+      if(file.exists(here::here(paste0("figs/", p.name, ".txt")))){
+        file.remove(here::here(paste0("figs/", p.name, ".txt")))
+      }
+    }
+  })
+})
+
+```
+
+#### Summarize SPLS-DA output
+
+```{r, eval=F, echo=F}
+splsda.data <- readRDS(here::here("data/splsda_data.rds"))
+splsda.x <- readRDS(here::here("data/splsda_x.rds"))
+splsda.y <- readRDS(here::here("data/splsda_y.rds"))
+splsda.plots.data <- readRDS(here::here("data/splsda_plots_data.rds"))
+```
+
+```{r, eval=F, echo=F}
+step1 <- lapply(names(splsda.x), function(x){
+  lapply(names(splsda.y), function(y){
+    
+    my <- dplyr::select(splsda.y, one_of(y)) %>%
+      drop_na() %>%
+      as.matrix %>%
+      {.[row.names(.) %in% splsda.x[[x]]$nnid, ]}
+    
+    data.frame(Age = x,
+               Variable = y,
+               n.samples = length(my),
+               group.size = table(my) %>%
+                 {paste0(names(.), ":", .)} %>%
+                 paste0(collapse = ","),
+               step1.n.selected.taxa = ifelse(is.null(splsda.data[[x]][[y]]),
+                                              0,
+                                              ncol(splsda.data[[x]][[y]]$x))
+    )
+  }) %>%
+    bind_rows
+}) %>%
+  bind_rows
+
+step2 <- lapply(names(splsda.plots.data), function(x){
+  lapply(names(splsda.plots.data[[x]]), function(y){
+    if(!is.null(splsda.plots.data[[x]][[y]])){
+      splsda.plots.data[[x]][[y]] %>%
+        dplyr::group_by(Age, Variable) %>%
+        dplyr::summarize(step2.n.selected.taxa = n_distinct(Taxa)) %>%
+        ungroup
+    }
+  }) %>%
+    bind_rows
+}) %>%
+  bind_rows
+
+
+splsda.output.data.summary <- left_join(step1, step2,
+                                        by = c("Age", "Variable")) %>%
+  dplyr::mutate(step2.n.selected.taxa = ifelse(is.na(step2.n.selected.taxa),
+                                               0,
+                                               step2.n.selected.taxa)) %>%
+  filter(n.samples > 0)
+
+saveRDS(splsda.output.data.summary, here::here("data/splsda_output_data_summary.rds"))
+```
+```{r, eval=T, echo=F}
+splsda.output.data.summary <- readRDS(here::here("data/splsda_output_data_summary.rds"))
+```
+```{r, eval=T}
+splsda.output.data.summary
+
+```
+
+### Plot selected taxa associated with investigation variables
+
+Identify taxa found associated across multiple time points
+
+```{r, eval=F, echo=F}
+splsda.plots.data.top.features <- readRDS(here::here("data/splsda_plots_data_top_features.rds"))
+load(here::here("data/associations_vars.RData"))
+```
+```{r, eval=F}
+splsda.plots.data.top.features.df <- splsda.plots.data.top.features %>%
+  lapply(function(x){
+    lapply(x, function(y){
+      y
+    }) %>%
+      bind_rows
+  }) %>%
+  bind_rows %>%
+  inner_join(adonis.out.vars.all %>%
+               filter(Term %in% names(data.prepared.associations),
+                      `Pr(>F)` <= 0.05) %>%
+               dplyr::select(Age, Variable = Term))
+
+saveRDS(splsda.plots.data.top.features.df, here::here("data/splsda_plots_data_top_features_df.rds"))
+```
+```{r, eval=T, echo=F}
+splsda.plots.data.top.features.df <- readRDS(here::here("data/splsda_plots_data_top_features_df.rds"))
+```
+```{r, eval=T}
+splsda.plots.data.top.features.df %>%
+  dplyr::select(Age, Variable, Taxa) %>%
+  {.[!duplicated(.), ]} %>%
+  dplyr::group_by(Variable, Taxa) %>%
+  dplyr::summarize(n.age = n_distinct(Age)) %>%
+  ungroup %>%
+  filter(n.age > 1) %>%
+  arrange(Variable, n.age)
+```
+
+
+Calculate non-zero abundance odds ratio between groups.
+
+```{r, eval=F, echo=F}
+splsda.plots.data.top.features.df <- readRDS(here::here("data/splsda_plots_data_top_features_df.rds"))
+load(here::here("data/associations_vars.RData"))
+```
+```{r, eval=F}
+splsda.plots.data.top.features.with.odds <- splsda.plots.data.top.features.df %>%
+  dplyr::group_by(Age, Variable, Taxa) %>%
+  dplyr::mutate(Abundance = log2(scale(abundance, center = F) + 1)) %>%
+  ungroup %>%
+  left_join(dplyr::select(inv.vars, Variable, Name),
+            by = "Variable") %>%
+  dplyr::mutate(Age = factor(Age, levels = c("Day 1",
+                                             "3 months",
+                                             "6 months",
+                                             "12 months")),
+                group = capitalize(group)) %>%
+  dplyr::arrange(Age, Variable, group) %>%
+  dplyr::mutate(group = factor(group,
+                               levels = swap(unique(group), "No", "Yes") %>%
+                                 swap("VD", "Elective CS") %>%
+                                 swap("VD in water", "Emergency CS") %>%
+                                 swap("Elective CS", "Emergency CS") %>%
+                                 swap("Other atopy", "No atopy")),
+                Name = factor(Name, levels = unique(Name))) %>%
+  {
+    list(Abundance = .,
+         `Non-zero` = dplyr::group_by(., Age, Variable, Name, Taxa, group) %>%
+           dplyr::summarise(`Non-zero` = 100*sum(Abundance > 0)/n_distinct(SampleID)) %>%
+           ungroup,
+         odds.ratio = left_join(select(., Age, Variable, Name, Taxa) %>%
+                                  {.[!duplicated(.), ]},
+                                split(., f = list(.$Age, .$Variable, .$Name, .$Taxa),
+                                      drop = T) %>%
+                                  lapply(function(x){
+                                    if(n_distinct(x$group) == 2 && (sum(x$Abundance == 0) > 0)){
+                                      oddsratio.wald(x = (x$Abundance > 0), y = droplevels(x$group)) %>%
+                                        {
+                                          bind_cols(as.data.frame(.$measure),
+                                                    as.data.frame(.$p.value)) %>%
+                                            {.[.$estimate != 1, ]}
+                                        } %>%
+                                        bind_cols(dplyr::select(x, Age, Variable, Name, Taxa) %>%
+                                                    {.[!duplicated(.), ]}) %>%
+                                        dplyr::mutate(comparison = paste0(levels(x$group)[1],
+                                                                          "/", levels(x$group)[2]))
+                                      
+                                    }
+                                  }) %>%
+                                  bind_rows()
+         )
+    )
+  }
+
+saveRDS(splsda.plots.data.top.features.with.odds,
+        here::here("data/splsda_plots_data_top_features_with_odds.rds"))
+```
+```{r, eval=F, echo=F}
+splsda.plots.data.top.features.df <- readRDS(here::here("data/splsda_plots_data_top_features_df.rds"))
+load(here::here("data/associations_vars.RData"))
+splsda.plots.data.top.features.with.odds <- readRDS(here::here("data/splsda_plots_data_top_features_with_odds.rds"))
+```
+```{r, eval=F}
+n <- unique(splsda.plots.data.top.features.df$Variable)
+p.list <- lapply(setNames(n, n), function(x){
+  
+  p1 <- splsda.plots.data.top.features.with.odds$Abundance %>%
+    filter(Variable == x) %>%
+    {
+      ggplot(., aes(x = Taxa, y = Abundance, fill = group)) +
+        theme +
+        facet_grid(~Name+Age, scales = "free", space = "free") +
+        geom_point(data =  filter(., Abundance > 0),
+                   size = 0.5, alpha = 0.5,
+                   position = position_jitterdodge(jitter.width = 0.2)) +
+        geom_boxplot(data =  filter(., Abundance > 0),
+                     alpha = 0.75, outlier.shape = NA,
+                     position = position_dodge(preserve = "single")) +
+        stat_compare_means(label = "p.signif",
+                           method = "kruskal",
+                           hide.ns = T,
+                           label.y.npc = 0.9) +
+        theme(plot.margin = unit(c(2, 2, 0, 2), "mm"),
+              axis.text.x = element_blank(),
+              axis.ticks.x = element_blank(),
+              axis.title.x = element_blank(),
+              legend.position = "top",
+              strip.background = element_blank(),
+              panel.background = element_blank(),
+              plot.background = element_blank(),
+              legend.background = element_blank(),
+              legend.key = element_blank()) +
+        labs(y = "Scaled abundance (log)",
+             fill = "Label")
+    }
+  
+  p2 <- splsda.plots.data.top.features.with.odds$`Non-zero` %>%
+    filter(Variable == x) %>%
+    ggplot(aes(x = Taxa, y = `Non-zero`, color = group)) +
+    theme +
+    facet_grid(~Name+Age, scales = "free", space = "free") +
+    geom_linerange(aes(ymin = 0, ymax = `Non-zero`, group = group),
+                   position = position_dodge(0.5),
+                   color = "grey20") +
+    geom_point(pch = 19, size = 1.25, alpha = 1,
+               position = position_dodge(0.5)) +
+    theme(plot.margin = unit(c(1, 2, 0, 2), "mm"),
+          strip.background = element_blank(),
+          strip.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          panel.background = element_blank(),
+          plot.background = element_blank(),
+          legend.position = "none") +
+    labs(y = "% non-zero",
+         color = "Label")
+  
+  p3 <- splsda.plots.data.top.features.with.odds$odds.ratio %>%
+    filter(Variable == x) %>%
+    dplyr::mutate(log.estimate = log(estimate),
+                  log.upper = log(upper),
+                  log.lower = log(lower),
+                  sign = symnum(fisher.exact,
+                                corr = F, na = F,
+                                cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+                                symbols = c("****", "***", "**", "*", "ns")) %>%
+                    factor(levels = c("****", "***", "**", "*", "ns"))) %>%
+    {
+      max <- max(abs(c(.$log.estimate[is.finite(.$log.estimate)],
+                       .$log.lower[is.finite(.$log.lower)],
+                       .$log.upper[is.finite(.$log.upper)])),
+                 na.rm = T)
+      dplyr::mutate(.,
+                    log.estimate = ifelse(is.infinite(log.estimate),
+                                          sign(log.estimate)*max,
+                                          log.estimate),
+                    log.upper = ifelse(is.infinite(log.upper),
+                                       sign(log.estimate)*max,
+                                       log.upper),
+                    log.lower = ifelse(is.infinite(log.lower),
+                                       sign(log.estimate)*max,
+                                       log.lower),
+                    pch = case_when(is.infinite(estimate) ~ "24",
+                                    estimate == 0 ~ "25",
+                                    TRUE ~ "21"))
+    } %>%
+    {
+      ymax = max(abs(c(.$log.estimate, .$log.lower, .$log.upper)),
+                 na.rm = T)
+      ggplot(., aes(x = Taxa, y = log.estimate)) +
+        theme +
+        facet_grid(~Name+Age, scales = "free", space = "free") +
+        geom_hline(yintercept = log(1)) +
+        geom_errorbar(aes(ymin = log.lower, ymax = log.upper),
+                      width = 0.5) +
+        geom_point(aes(fill = sign,
+                       pch = pch),
+                   size = 2, alpha = 1) +
+        scale_fill_manual(values = colorRampPalette(c("red", "white"))(5)) +
+        scale_shape_manual(values = c("21" = 21, "24" = 24, "25" = 25),
+                           guide = "none") +
+        theme(plot.margin = unit(c(1, 2, 2, 2), "mm"),
+              strip.background = element_blank(),
+              strip.text.x = element_blank(),
+              axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+              axis.title.x = element_blank(),
+              panel.background = element_blank(),
+              plot.background = element_blank(),
+              legend.background = element_blank(),
+              legend.key = element_blank(),
+              legend.position = "bottom") +
+        scale_y_continuous(limits = c(-ymax, ymax)) +
+        labs(y = "Odds ratio (log)",
+             fill = "p-value") +
+        guides(fill = guide_legend(override.aes = list(shape = 21)))
+    }
+  
+  cowplot::plot_grid(p1 +
+                       theme(panel.spacing = unit(1, "mm"),
+                             plot.margin = unit(c(2, 2, 0, 2), "mm")) +
+                       coord_cartesian(clip = "off"),
+                     p2 +
+                       theme(panel.spacing = unit(1, "mm"),
+                             plot.margin = unit(c(0, 2, 0, 2), "mm")) +
+                       coord_cartesian(clip = "off") +
+                       scale_y_continuous(position = "right"),
+                     p3 +
+                       theme(panel.spacing = unit(1, "mm"),
+                             plot.margin = unit(c(0, 2, 2, 2), "mm")) +
+                       coord_cartesian(clip = "off"),
+                     ncol = 1,
+                     rel_heights = c(4, 1, 5),
+                     align = "v",
+                     axis = "lr")
+  
+})
+
+lapply(names(p.list), function(x){
+  
+  ggsave(plot = p.list[[x]],
+         filename = here::here(paste0("figs/figures/association_features_curation/",
+                                      x, ".pdf")),
+         device = "pdf",
+         bg = "transparent",
+         width = 2.5*fig.layout$width.double,
+         height = fig.layout$width.double,
+         unit = "mm")
+})
+```
+
+## Plot curated features
+```{r, eval=F, echo=F}
+splsda.plots.data <- readRDS(here::here("data/splsda_plots_data.rds"))
+load(here::here("data/associations_vars.RData"))
+splsda.plots.data.top.features.with.odds <- readRDS(here::here("data/splsda_plots_data_top_features_with_odds.rds"))
+```
+```{r, eval=F}
+
+selected.taxa.list <- list(
+  c("3 months", "dog_preg", "Ralstonia|g733"),
+  c("3 months", "dog_preg", "Ralstonia|g1760"),
+  c("3 months", "dog_preg", "Betaproteobacteriales|o628"),
+  c("6 months", "dog_preg", "Agathobacter|g76"),
+  c("6 months", "dog_preg", "Anaerococcus|g279"),
+  c("6 months", "dog_preg", "Blautia|g77"),
+  
+  c("Day 1", "Dry_skin_examination_baby3mdr", "Ralstonia|g1022"),
+  c("Day 1", "Dry_skin_examination_baby3mdr", "Bacilli|c1636"),
+  c("Day 1", "Dry_skin_examination_baby3mdr", "Streptococcus|g1532"),
+  c("3 months", "Dry_skin_examination_baby3mdr", "Streptococcus|g1532"),
+  c("3 months", "Dry_skin_examination_baby3mdr", "Finegoldia magna|s32"),
+  c("3 months", "Dry_skin_examination_baby3mdr", "Streptococcus|g5861"),
+  c("12 months", "Dry_skin_examination_baby3mdr", "Porphyromonas pasteri|s152"),
+  c("12 months", "Dry_skin_examination_baby3mdr", "Methylobacterium|g231"),
+  c("12 months", "Dry_skin_examination_baby3mdr", "Bifidobacterium|g8"),
+  
+  c("3 months", "nutr_breastfeed_6m", "Actinobacteria|c340"),
+  c("3 months", "nutr_breastfeed_6m", "Veillonella|g7"),
+  c("3 months", "nutr_breastfeed_6m", "Prevotellaceae|f30"),
+  c("6 months", "nutr_breastfeed_6m", "Bifidobacterium|g8"),
+  c("6 months", "nutr_breastfeed_6m", "Streptococcus|g11"),
+  c("6 months", "nutr_breastfeed_6m", "Prevotellaceae|f30"),
+  
+  c("Day 1", "study_geo_locations_basearticle", "Betaproteobacteriales|o1460"),
+  c("Day 1", "study_geo_locations_basearticle", "Betaproteobacteriales|o845"),
+  c("Day 1", "study_geo_locations_basearticle", "Ralstonia|g1031"),
+  c("3 months", "study_geo_locations_basearticle", "Betaproteobacteriales|o1460"),
+  c("3 months", "study_geo_locations_basearticle", "Betaproteobacteriales|o808"),
+  c("3 months", "study_geo_locations_basearticle", "Ralstonia|g568"),
+  c("6 months", "study_geo_locations_basearticle", "Acinetobacter|g9"),
+  c("6 months", "study_geo_locations_basearticle", "Actinomyces|g104"),
+  c("6 months", "study_geo_locations_basearticle", "Streptococcus|g3")
+)
+
+selected.features  <- lapply(selected.taxa.list, function(x){
+  data.frame(Age = x[1], Variable = x[2], Taxa = x[3])
+}) %>%
+  bind_rows %>%
+  dplyr::mutate(Age = factor(Age, levels = c("Day 1",
+                                             "3 months",
+                                             "6 months",
+                                             "12 months")))
+
+var.levels <- c("study_geo_locations_basearticle",
+                "dog_preg",
+                "nutr_breastfeed_6m",
+                "Dry_skin_examination_baby3mdr")
+
+d <- setNames(names(splsda.plots.data.top.features.with.odds),
+              names(splsda.plots.data.top.features.with.odds)) %>%
+  lapply(function(x){
+    splsda.plots.data.top.features.with.odds[[x]] %>%
+      right_join(selected.features) %>%
+      dplyr::mutate(Variable = factor(Variable, levels = var.levels)) %>%
+      arrange(Variable, Age) %>%
+      dplyr::mutate(Name = factor(Name, levels = unique(Name))) %>%
+      {
+        if(x %in% c("Abundance")){
+          dplyr::group_by(., Variable, Age, group) %>%
+            dplyr::mutate(group.label = paste0(unique(Age),
+                                               ": n=", n_distinct(nnid), "")) %>%
+            ungroup %>%
+            dplyr::group_by(., Variable, group) %>%
+            dplyr::mutate(group.label = paste0(group, " (",
+                                               paste0(unique(group.label),
+                                                      collapse = ", "),
+                                               ")")) %>%
+            ungroup %>%
+            dplyr::arrange(Variable, group) %>%
+            dplyr::mutate(group.label = factor(group.label,
+                                               levels = unique(group.label)))
+        } else if(x %in% c("Non-zero")){
+          dplyr::group_by(., Variable, Age, group) %>%
+            dplyr::mutate(group.label = paste0(group, "-", Variable)) %>%
+            ungroup %>%
+            dplyr::arrange(Variable, group) %>%
+            dplyr::mutate(group.label = factor(group.label,
+                                               levels = unique(group.label)))
+        } else {
+          .
+        }
+      }
+  })
+
+
+p1 <- d$Abundance %>%
+  {
+    ggplot(., aes(x = Taxa, y = Abundance, fill = group.label)) +
+      theme +
+      facet_grid(~Name+Age, scales = "free", space = "free") +
+      geom_point(data =  filter(., Abundance > 0),
+                 size = 0.5, alpha = 0.5,
+                 position = position_jitterdodge(jitter.width = 0.2)) +
+      geom_boxplot(data =  filter(., Abundance > 0),
+                   alpha = 0.75, outlier.shape = NA,
+                   position = position_dodge(preserve = "single")) +
+      stat_compare_means(label = "p.signif",
+                         method = "kruskal",
+                         hide.ns = T,
+                         label.y.npc = 0.9) +
+      theme(axis.text.x = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.title.x = element_blank(),
+            legend.position = "top",
+            strip.background = element_blank(),
+            panel.background = element_blank(),
+            plot.background = element_blank(),
+            legend.background = element_blank(),
+            legend.key = element_blank()) +
+      labs(y = "Scaled abundance (log)",
+           fill = "Label")
+  }
+
+
+p2 <- d$`Non-zero` %>%
+  ggplot(aes(x = Taxa, y = `Non-zero`, color = group.label)) +
+  theme +
+  facet_grid(~Name+Age, scales = "free", space = "free") +
+  geom_linerange(aes(ymin = 0, ymax = `Non-zero`, group = group.label),
+                 position = position_dodge(0.5),
+                 color = "grey20") +
+  geom_point(pch = 19, size = 1.25, alpha = 1,
+             position = position_dodge(0.5)) +
+  theme(strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank(),
+        legend.position = "none") +
+  labs(y = "% non-zero",
+       color = "Label")
+
+p3 <- d$odds.ratio %>%
+  dplyr::mutate(log.estimate = log(estimate),
+                log.upper = log(upper),
+                log.lower = log(lower),
+                sign = symnum(fisher.exact,
+                              corr = F, na = F,
+                              cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+                              symbols = c("****", "***", "**", "*", "ns")) %>%
+                  factor(levels = c("****", "***", "**", "*", "ns"))) %>%
+  {
+    max <- max(abs(c(.$log.estimate[is.finite(.$log.estimate)],
+                     .$log.lower[is.finite(.$log.lower)],
+                     .$log.upper[is.finite(.$log.upper)])),
+               na.rm = T)
+    dplyr::mutate(.,
+                  log.estimate = ifelse(is.infinite(log.estimate),
+                                        sign(log.estimate)*max,
+                                        log.estimate),
+                  log.upper = ifelse(is.infinite(log.upper),
+                                     sign(log.estimate)*max,
+                                     log.upper),
+                  log.lower = ifelse(is.infinite(log.lower),
+                                     sign(log.estimate)*max,
+                                     log.lower),
+                  pch = case_when(is.infinite(estimate) ~ "24",
+                                  estimate == 0 ~ "25",
+                                  TRUE ~ "21"))
+  } %>%
+  {
+    ymax = max(abs(c(.$log.estimate, .$log.lower, .$log.upper)),
+               na.rm = T)
+    ggplot(., aes(x = Taxa, y = log.estimate)) +
+      theme +
+      facet_grid(~Name+Age, scales = "free", space = "free") +
+      geom_hline(yintercept = log(1)) +
+      geom_errorbar(aes(ymin = log.lower, ymax = log.upper),
+                    width = 0.5) +
+      geom_point(aes(fill = sign,
+                     pch = pch),
+                 size = 2, alpha = 1) +
+      scale_fill_manual(values = colorRampPalette(c("red", "white"))(5)) +
+      scale_shape_manual(values = c("21" = 21, "24" = 24, "25" = 25),
+                         guide = "none") +
+      theme(strip.background = element_blank(),
+            strip.text.x = element_blank(),
+            axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+            axis.title.x = element_blank(),
+            panel.background = element_blank(),
+            plot.background = element_blank(),
+            legend.background = element_blank(),
+            legend.key = element_blank(),
+            legend.position = "bottom") +
+      scale_y_continuous(limits = c(-ymax, ymax)) +
+      labs(y = "Odds ratio (log)",
+           fill = "p-value") +
+      guides(fill = guide_legend(override.aes = list(shape = 21)))
+  }
+
+p <- cowplot::plot_grid(p1 +
+                          theme(panel.spacing = unit(1, "mm"),
+                                plot.margin = unit(c(2, 2, 0, 8), "mm")) +
+                          coord_cartesian(clip = "off"),
+                        p2 +
+                          theme(panel.spacing = unit(1, "mm"),
+                                plot.margin = unit(c(0, 2, 0, 8), "mm")) +
+                          scale_y_continuous(position = "right") +
+                          coord_cartesian(clip = "off"),
+                        p3 +
+                          theme(panel.spacing = unit(1, "mm"),
+                                plot.margin = unit(c(0, 2, 2, 8), "mm")) +
+                          coord_cartesian(clip = "off"),
+                        ncol = 1,
+                        rel_heights = c(4, 1, 4.5),
+                        align = "v",
+                        axis = "lr")
+
+p.name <- "4_2-associations-selected_taxa_abundance"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <-paste0("Curated subset of taxa associated with investigation variables. Taxa selected by Kruskal-Wallis test (p-value < ", associations.taxa.kw.p.thres, ") and SPLS-DA. Taxa abundance shown as rarefied, standardized, scaled and log-transformed read counts. Boxplots in the top facet are based on non-zero abundance values (significance assessed by Kruskal-Wallis test). Percentage of non-zero abundance values are shown in the middle facet and odds-ratio of non-negative values are shown in the bottom facet (significance assessed by Fisher exact test).")
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "4_2-associations-selected_taxa_abundance"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, "_legend.txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+### Calculate odds ratio for each delivery mode in available binary variables
+
+```{r, eval=F}
+data <- readRDS(here::here("data/data.rds"))
+data.prepared.associations <- readRDS(here::here("data/data_prepared_associations.rds"))
+```
+```{r delivery_mode_odds_all, eval=F}
+# Select binary variables
+binary.variables <- data.prepared.associations %>%
+  dplyr::select(one_of("Skin barrier", inv.vars %>%
+                         filter(Factor == "Skin barrier") %>%
+                         {as.character(.$Variable)}), -delivery_mode) %>%
+  {
+    min.n <- sapply(., function(x){
+      x[!is.na(x)] %>%
+        table %>%
+        as.vector %>%
+        min
+    })
+    is.binary <- sapply(., function(x){
+      length(unique(x[!is.na(x)])) == 2
+    })
+    .[, is.binary & (min.n > 10)]
+  } %>%
+  names
+
+delivery.mode.odds.ratio.out <- lapply(binary.variables, function(x){
+  # x <- binary.variables[1]
+  data.prepared.associations %>%
+    dplyr::select(nnid, one_of("delivery_mode", x)) %>%
+    unique %>%
+    dplyr::select(-nnid) %>%
+    drop_na() %>%
+    # Standardize levels
+    {
+      if(x %in% c("Skin barrier")){
+        .[, x] <- factor(.[, x], levels = c(2, 1))
+      } else {
+        .[, x] <- str_replace(.[, x], "^[nN]o.*$", "No") %>%
+          str_replace("^(?!^No$).*$", "Yes") %>%
+          factor(levels = c("No", "Yes"))
+      }
+      .} %>%
+    table %>%
+    as.data.frame %>%
+    spread(2, Freq) %>%
+    dplyr::mutate(delivery_mode = as.factor(delivery_mode)) %>%
+    dplyr::arrange(delivery_mode) %>%
+    `row.names<-`(.$delivery_mode) %>%
+    {
+      levels <- levels(.$delivery_mode)
+      comparison <- paste(names(.)[3], names(.)[2], sep = "/")
+      list(freq = .,
+           odds.ratio = dplyr::select(., -delivery_mode) %>%
+             as.matrix %>%
+             oddsratio.wald() %>%
+             {
+               d1 <- .
+               d1$measure %>%
+                 as.data.frame %>%
+                 dplyr::mutate(delivery_mode = factor(row.names(.), levels = levels),
+                               comparison = comparison) %>%
+                 bind_cols(d1$p.value %>%
+                             as.data.frame)
+             }
+      )
+    }
+}) %>%
+  `names<-`(binary.variables)
+saveRDS(delivery.mode.odds.ratio.out,
+        here::here("data/delivery_mode_odds_ratio_out.rds"))
+```
+```{r, eval=F}
+delivery.mode.odds.ratio.out <- readRDS(here::here("data/delivery_mode_odds_ratio_out.rds"))
+```
+```{r, eval=F}
+d <- lapply(names(delivery.mode.odds.ratio.out), function(x){
+  delivery.mode.odds.ratio.out[[x]]$odds.ratio %>%
+    dplyr::mutate(Variable = x)
+}) %>%
+  bind_rows %>%
+  left_join(inv.vars %>%
+              dplyr::select(Variable, Name, SubCategory) %>%
+              rbind(data.frame(Variable = "Skin barrier",
+                               Name = "Skin barrier cluster",
+                               SubCategory = "General")),
+            by = "Variable") %>%
+  dplyr::group_by(SubCategory) %>%
+  dplyr::mutate(mean.log.estimate = mean(log(estimate)),
+                n.variable = n_distinct(Name)) %>%
+  ungroup %>%
+  dplyr::arrange(n.variable, mean.log.estimate) %>%
+  dplyr::mutate(SubCategory = factor(SubCategory, levels = rev(unique(SubCategory))),
+                label = paste0(Name, " (", comparison, ")")) %>%
+  mutate(label = factor(label, levels = unique(label)),
+         Name = factor(Name, levels = unique(Name))) %>%
+  filter(!((delivery_mode == levels(delivery_mode)[1]) & (label != levels(label)[1])))
+
+p <- d %>%
+  {
+    ggplot(., aes(y = log(estimate), x = label, group = delivery_mode,
+                  fill = delivery_mode)) +
+      theme +
+      facet_grid(SubCategory~., scales = "free_y", space = "free_y") +
+      geom_hline(yintercept = log(1)) +
+      geom_errorbar(aes(ymin = log(lower), ymax = log(upper)),
+                    position = position_dodge(width = 0.75),
+                    width = 0.5) +
+      geom_point(size = 3, pch = 21,
+                 position = position_dodge(width = 0.75)) +
+      scale_fill_brewer(palette = "Spectral", direction = -1) +
+      labs(y = paste0("Log odds ratio (/", levels(.$delivery_mode)[1], ")"),
+           fill = "Delivery mode") +
+      theme(axis.title.y = element_blank()) +
+      coord_flip()
+  }
+
+p.name <- "4_2-associations-delivery_mode_all_odds"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Comparison of odds ratio across delivery modes. Odds ratio and 95% confidence interval calculated by unconditional maximum likelihood estimation and normal approximation."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+
+t <- lapply(names(delivery.mode.odds.ratio.out), function(x){
+  delivery.mode.odds.ratio.out[[x]]$freq %>%
+    dplyr::mutate(Variable = x)
+}) %>%
+  bind_rows %>%
+  left_join(dplyr::select(d,
+                          Variable,
+                          Name,
+                          SubCategory,
+                          n.variable,
+                          mean.log.estimate) %>%
+              unique,
+            by = "Variable") %>%
+  dplyr::arrange(SubCategory) %>%
+  dplyr::select(Variable = Name, `Delivery mode` = delivery_mode, Yes, No, `1`, `2`) %>%
+  dplyr::mutate(Odds = ifelse(is.na(Yes),
+                              round(.$`1`/.$`2`, 2),
+                              round(Yes/No, 2))) %>%
+  dplyr::mutate(Variable = factor(Variable, levels = rev(levels(Variable)))) %>%
+  dplyr::arrange(Variable, `Delivery mode`)
+
+t.name <- "4_2-associations-delivery_mode_all_odds_table"
+
+saveRDS(t, here::here(paste0("figs/", t.name, ".rds")))
+write.table(t, here::here(paste0("figs/", t.name, ".txt")),
+            sep = "\t", quote = F)
+t.legend <- "Frequencies across delivery modes."
+writeLines(t.legend, file(here::here(paste0("figs/", t.name, "_legend.txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "4_2-associations-delivery_mode_all_odds"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, "_legend.txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+```{r, eval = T, echo = F}
+t.name <- "4_2-associations-delivery_mode_all_odds_table"
+t <- readRDS(here::here(paste0("figs/", t.name, ".rds")))
+t.legend <- readLines(here::here(paste0("figs/", t.name, "_legend.txt")))
+```
+```{r, eval = T}
+t
+```
+                   
+`r t.legend`
+
+
+## TEWL SPLS regression
+
+Extract features associated with TEWL using a Sparse Partial Least Squares (SPLS) regression method.
+
+```{r, eval = F, echo = F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+mb.counts.filtered.rar.by.tax <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax.rds"))
+```
+```{r spls, eval=T}
+# Select numerical variables linked to skin barrier
+d <- data %>%
+  dplyr::select(one_of(c("nnid",
+                         inv.vars %>%
+                           filter(Factor == "Skin barrier") %>%
+                           dplyr::select(Variable) %>%
+                           unlist %>%
+                           as.character))) %>%
+  unique %>%
+  `row.names<-`(.$nnid) %>%
+  # Only TEWL data are numeric
+  dplyr::select_if(is.numeric) %>%
+  drop_na
+
+# Recover microbiome data
+spls.data <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  `row.names<-`(.$taxonomy) %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(outliers %>%
+                         filter(!outlier) %>%
+                         dplyr::select(SampleID) %>%
+                         unlist %>%
+                         as.character)) %>%
+  {
+    rowsums <- rowSums(.)
+    m <- dplyr::mutate(., taxonomy = row.names(.)) %>%
+      filter(rowsums != 0) %>%
+      `row.names<-`(.$taxonomy) %>%
+      dplyr::select(-taxonomy)
+    
+    t(m) %>%
+      as.data.frame %>%
+      `row.names<-`(names(m)) %>%
+      `names<-`(row.names(m))
+  } %>%
+  dplyr::mutate(SampleID = row.names(.)) %>%
+  inner_join(data %>%
+               dplyr::select(SampleID, Age, nnid),
+             by = "SampleID") %>%
+  # Split microbiome samples by age
+  split(.$Age) %>%
+  lapply(function(x){
+    x %>%
+      filter(nnid %in% row.names(d)) %>%
+      `row.names<-`(.$nnid) %>%
+      dplyr::select(-Age, -SampleID, -nnid) %>%
+      # Remove poorly represented taxa
+      {.[, colSums(. > 0) > 5]} %>%
+      {
+        list(x = .,
+             y =  d[row.names(.), ])
+      }
+  })
+saveRDS(spls.data, here::here("data/spls_data.rds"))
+```
+```{r, eval=F, echo=F}
+spls.data <- readRDS(here::here("data/spls_data.rds"))
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval=F}
+# Show the effect of log transformation on the TEWL values
+
+p5 <- spls.data %>%
+  {
+    lapply(names(.), function(x){
+      .[[x]]$y %>%
+        melt %>%
+        dplyr::mutate(Age = x,
+                      `Trans.` = "none") %>%
+        bind_rows(mutate(., `Trans.` = "log2",
+                         value = log2(value + 1)))
+    })
+  } %>%
+  bind_rows() %>%
+  left_join(inv.vars %>%
+              dplyr::select(variable = Variable, `Measurement age` = Age,
+                            ShortName),
+            by = "variable") %>%
+  dplyr::mutate(`Trans.` = recode_factor(`Trans.`, none = "none",
+                                         log2 = "log2")) %>%
+  ggqqplot(x = "value", color = "Trans.") +
+  theme +
+  scale_color_brewer(palette = "Accent") +
+  scale_fill_brewer(palette = "Accent")
+
+p5.name <- paste0(notebook.name, "-tewl_log_effect")
+saveRDS(p5, here::here(paste0("figs/", p5.name, ".rds")))
+
+p5.legend <- "Quantile-Quantile (QQ) plot of transepidermal water loss (TEWL) values distribution against a normal distribution with and without log-transformation. Values include measurements at 1 day, 3 months, 6 months and 12 months of age."
+writeLines(p5.legend, file(here::here(paste0("figs/", p5.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p5.name <- paste0(notebook.name, "-tewl_log_effect")
+p5 <- readRDS(here::here(paste0("figs/", p5.name, ".rds")))
+p5.legend <- readLines(here::here(paste0("figs/", p5.name, ".txt")))
+```
+```{r, eval = T}
+p5
+```
+`r p5.legend`
+
+```{r, eval = T, echo = F}
+spls.data <- readRDS(here::here("data/spls_data.rds"))
+```
+```{r}
+# Compute SPLS regressions
+spls.out <- lapply(names(spls.data), function(x){
+  cv <- cv.spls(spls.data[[x]]$x, log2(spls.data[[x]]$y+1), eta = seq(0.5,0.9,0.1), K = c(1:10))
+  f <- spls(spls.data[[x]]$x, log2(spls.data[[x]]$y+1), eta = cv$eta.opt, K = cv$K.opt)
+  list(cv = cv,
+       f = f,
+       selected.features = colnames(f$x)[f$A])
+}) %>%
+  `names<-`(names(spls.data))
+saveRDS(spls.out, here::here("data/spls_out.rds"))
+```
+```{r, eval=F, echo=F}
+spls.out <-readRDS(here::here("data/spls_out.rds"))
+```
+```{r, eval=F}
+# plot SPLS coef for selected features
+
+spls.plots.data <- lapply(names(spls.out), function(x){
+  spls.out[[x]][["f"]][["x"]][, spls.out[[x]][["selected.features"]]] %>%
+    as.data.frame %>%
+    dplyr::mutate(nnid = row.names(.)) %>%
+    melt(id.vars = "nnid") %>%
+    dplyr::select(nnid, Taxa = variable,
+                  `Taxa abundance` = value) %>%
+    full_join(spls.out[[x]][["f"]][["y"]] %>%
+                as.data.frame %>%
+                dplyr::mutate(nnid = row.names(.)) %>%
+                melt(id.vars = "nnid") %>%
+                left_join(inv.vars %>%
+                            dplyr::select(variable = Variable, ShortName, Age),
+                          by = "variable") %>%
+                dplyr::select(nnid, Variable = ShortName, `TEWL age` = Age, value) %>%
+                dplyr::mutate(Age = x),
+              by = "nnid") %>%
+    # Add max coef
+    left_join(coef.spls(spls.out[[x]][["f"]]) %>%
+                as.data.frame %>%
+                `names<-`(paste0("coef_spls_", names(.))) %>%
+                dplyr::mutate(Taxa = row.names(.),
+                              max.spls.coef = apply(coef.spls(spls.out[[x]][["f"]]), 1, function(x){
+                                x[which.max(abs(x))]}),
+                              age.max.spls.coef = colnames(coef.spls(spls.out[[x]][["f"]]))[apply(coef.spls(spls.out[[x]][["f"]]), 1, function(x){which.min(abs(na.omit(x)))})]),
+              by = "Taxa"
+    ) %>%
+    dplyr::mutate(age.max.spls.coef = recode_factor(age.max.spls.coef,
+                                                    tewl_lua_mean_temp20_25_baby3mdr = "3 months",
+                                                    tewl_lua_mean_temp20_25_baby6mdr = "6 months",
+                                                    tewl_lua_mean_temp20_25_baby12mdr = "12 months"))
+}) %>%
+  `names<-`(names(spls.out))
+saveRDS(spls.plots.data, here::here("data/spls_plots_data.rds"))
+
+```
+```{r, eval=F, echo=F}
+spls.plots.data <- readRDS(here::here("data/spls_plots_data.rds"))
+```
+```{r, eval=F}
+p <- spls.plots.data %>%
+  bind_rows() %>%
+  dplyr::select(Taxa, Age,
+                `3 months` = coef_spls_tewl_lua_mean_temp20_25_baby3mdr,
+                `6 months` = coef_spls_tewl_lua_mean_temp20_25_baby6mdr,
+                `12 months` = coef_spls_tewl_lua_mean_temp20_25_baby12mdr) %>%
+  unique %>%
+  {
+    d <- .
+    o <- dplyr::select(d,
+                       `3 months`,
+                       `6 months`,
+                       `12 months`) %>%
+      `row.names<-`(d$Taxa) %>%
+      dist %>%
+      hclust(method = "complete")
+    mutate(d, order = o$order)
+  } %>%
+  gather("TEWL", "value", `3 months`, `6 months`, `12 months`) %>%
+  dplyr::mutate(Taxa = factor(Taxa, levels = reorder(unique(.$Taxa), unique(.$order))),
+                TEWL = factor(TEWL, levels = c("3 months",
+                                               "6 months",
+                                               "12 months")),
+                Age = factor(Age, levels = c("Day 1",
+                                             "3 months",
+                                             "6 months",
+                                             "12 months"))) %>%
+  ggplot(aes(x = TEWL, y = Taxa, fill = value)) +
+  theme +
+  facet_grid(Age~., scales = "free", space = "free") +
+  geom_tile() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(fill = "SPLS coef") +
+  scale_fill_gradient2(low = "dodgerblue", mid = "white", high = "firebrick") +
+  scale_x_discrete(expand = c(0, 0))
+
+p.name <- "4-associations-tewl_spls_selected_taxa"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Skin bacterial taxa associated with TEWL across ages. Taxa selected by SPLS."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "4-associations-tewl_spls_selected_taxa"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+
+## Session info
+```{r, eval = T}
+sessionInfo()
+```

@@ -1,0 +1,45 @@
+Variable	Factor	Age	Name	ShortName	SubCategory	Description
+rct_ad_outcome	Skin barrier	12 months	AD by 12 months	AD by 12 months	AD	Atopic dermatitis diagnosis by 12 months
+ald_ad_ukwp_hr_by36m	Skin barrier	36 months	AD by 36 months	AD by 36 months	AD	Atopic dermatitis diagnosis by 36 months
+ald_as_spt_pos_anyintfood_36m	Allergy	36 months	SPT at 36 months	SPT	SPT	Skin prick test response to peanut, milk, wheat or eggs at 36 months (inflamed spot >= 3mm)
+eczema_skin_examination_baby3mdr	Skin barrier	3 months	Eczema at 3 months	Eczema	Eczema	Observed eczema at 3 months
+eczema_skin_examination_baby6mdr	Skin barrier	6 months	Eczema at 6 months	Eczema	Eczema	Observed eczema at 6 months
+eczema_skin_examination_baby12mdr	Skin barrier	12 months	Eczema at 12 months	Eczema	Eczema	Observed eczema at 12 months
+eczema_any	Skin barrier	12 months	Eczema by 12 months	Eczema	Eczema	Any observed eczema in the first year of life
+possible_ad	Skin barrier	12 months	Possible AD	Possible AD	AD	Atopic dermatitis diagnosed or not excluded or any observed eczema in the first year of life
+Dry_skin_examination_baby3mdr	Skin barrier	3 months	Dry skin at 3 months	Dry skin	Dry skin	Observed dry skin at 3 months
+Dry_skin_examination_baby6mdr	Skin barrier	6 months	Dry skin at 6 months	Dry skin	Dry skin	Observed dry skin at 6 months
+Dry_skin_examination_baby12mdr	Skin barrier	12 months	Dry skin at 12 months	Dry skin	Dry skin	Observed dry skin at 12 months
+dry_skin_any	Skin barrier	12 months	Dry skin by 12 months	Dry skin	Dry skin	Any observed dry skin in the first year of life
+tewl_lua_mean_temp20_25_baby3mdr	Skin barrier	3 months	TEWL at 3 months	TEWL	TEWL	Transepidermal water loss (TEWL) measured on the left lateral upper arm at 3 months (mean of 3 measurements sampled at room temperature between 20 and 25°C) [g/m2/h]
+tewl_lua_mean_temp20_25_baby6mdr	Skin barrier	6 months	TEWL at 6 months	TEWL	TEWL	Transepidermal water loss (TEWL) measured on the left lateral upper arm at 6 months (mean of 3 measurements sampled at room temperature between 20 and 25°C) [g/m2/h]
+tewl_lua_mean_temp20_25_baby12mdr	Skin barrier	12 months	TEWL at 12 months	TEWL	TEWL	Transepidermal water loss (TEWL) measured on the left lateral upper arm at 12 months (mean of 3 measurements sampled at room temperature between 20 and 25°C) [g/m2/h]
+tewl_lua_mean_temp20_25_baby3mdr_quartiles	Skin barrier	3 months	TEWL at 3 months (Qs)	TEWL	TEWL	Quartiles of transepidermal water loss (TEWL) measured on the left lateral upper arm at 3 months (mean of 3 measurements sampled at room temperature between 20 and 25°C)
+tewl_lua_mean_temp20_25_baby6mdr_quartiles	Skin barrier	6 months	TEWL at 6 months (Qs)	TEWL	TEWL	Quartiles of transepidermal water loss (TEWL) measured on the left lateral upper arm at 6 months (mean of 3 measurements sampled at room temperature between 20 and 25°C)
+tewl_lua_mean_temp20_25_baby12mdr_quartiles	Skin barrier	12 months	TEWL at 12 months (Qs)	TEWL	TEWL	Quartiles of transepidermal water loss (TEWL) measured on the left lateral upper arm at 12 months (mean of 3 measurements sampled at room temperature between 20 and 25°C)
+xerosis_arm_leg_extens_baby3mdr3cat	Skin barrier	3 months	Dry skin on limbs at 3 months	Dry skin on limbs	Dry skin	Observed dry skin on extensors arms and legs at 3 months scored as none, mild or moderate-severe
+xerosis_arm_leg_extens_baby6mdr3cat	Skin barrier	6 months	Dry skin on limbs at 6 months	Dry skin on limbs	Dry skin	Observed dry skin on extensors arms and legs at 6 months scored as none, mild or moderate-severe
+xerosis_arm_leg_extens_baby12mdr3cat	Skin barrier	12 months	Dry skin on limbs at 12 months	Dry skin on limbs	Dry skin	Observed dry skin on extensors arms and legs at 12 months scored as none, mild or moderate-severe
+flg_mutation	Genetics	NA	FLG mutation	FLG mutation	FLG mutation	Any mutation in the filaggrin gene (FLG)
+mother_atopicderm3cat	Parental	NA	Maternal AD	Maternal AD	Parental AD	Maternal atopic disease reported as none, atopic dermatitis or other atopic disease
+father_atopicderm3cat	Parental	NA	Paternal AD	Paternal AD	Parental AD	Paternal atopic disease reported as none, atopic dermatitis or other atopic disease
+mother_asthma3cat	Parental	NA	Maternal asthma	Maternal asthma	Parental asthma	Maternal athmatic disease reported as none, athma or other atopic disease
+father_asthma3cat	Parental	NA	Paternal asthma	Paternal asthma	Parental asthma	Paternal athmatic disease reported as none, athma or other atopic disease
+mother_foodallergy3cat	Parental	NA	Maternal food allergy	Maternal food allergy	Parental food allergy	Maternal food allergy reported as none, food allergy or other atopic disease
+father_foodallergy3cat	Parental	NA	Paternal food allergy	Paternal food allergy	Parental food allergy	Paternal food allergy reported as none, food allergy or other atopic disease
+mother_allergicrhinitis3cat	Parental	NA	Maternal allergic rhinitis	Maternal allergic rhinitis	Parental allergic rhinitis	Maternal allergic rhinitis reported as none, allergic rihintis or other atopic disease
+father_allergicrhinitis3cat	Parental	NA	Paternal allergic rhinitis	Paternal allergic rhinitis	Parental allergic rhinitis	Paternal allergic rhinitis reported as none, allergic rihintis or other atopic disease
+delivery_mode	Delivery mode	Day 1	Delivery mode	Delivery mode	Delivery mode	Mode of delivery reported as vaginal (VD), VD in water, elective c-section (CS) or emmergency CS
+live_urban_rural	Environment	NA	Living location	Living location	Living location	Household location reported as urban or rural
+baby_birth_4season	Environment	NA	Birth season	Birth season	Birth season	Birth season
+dog_preg	Environment	NA	Dog	Dog	Pet	Dog ownership during pregnancy
+cat_preg	Environment	NA	Cat	Cat	Pet	Cat ownership during pregnancy
+ald_as_ige_pos_egg_3m	Allergy	3 months	Eggs IgE	Eggs IgE	Food allergy	Detected serum IgE against eggs antigens at 3 months (>= 0.1 kUA/l)
+ald_as_ige_pos_peanut_3m	Allergy	3 months	Peanut IgE	Peanut IgE	Food allergy	Detected serum IgE against peanut antigens at 3 months (>= 0.1 kUA/l)
+ald_as_ige_pos_milk_3m	Allergy	3 months	Milk IgE	Milk IgE	Food allergy	Detected serum IgE against milk antigens at 3 months (>= 0.1 kUA/l)
+ald_as_ige_pos_wheat_3m	Allergy	3 months	Wheat IgE	Wheat IgE	Food allergy	Detected serum IgE against wheat antigens at 3 months (>= 0.1 kUA/l)
+food_allergy	Allergy	3 months	Food allergy	Food allergy	Food allergy	Detected serum IgE against eggs, peanut, milk or wheat antigens at 3 months (>= 0.1 kUA/l)
+nutr_breastfeed_6m	Breastfeeding	6 months	Breastfeeding at 6 months	Breastfeeding at 6 months	Breastfeeding at 6 months	Any breastfeeding at 6 months
+allocation	Skin and dietary intervention	NA	RCT group	RCT group	RCT group	Randomized control trial group allocation
+gender_baby_newborn	Sex	NA	Sex	Sex	Sex	Sex (F: female, M. male)
+study_geo_locations_basearticle	Environment	NA	Birth location	Birth location	Birth location	Birth location

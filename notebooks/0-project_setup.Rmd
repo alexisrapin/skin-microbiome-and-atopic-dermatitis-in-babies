@@ -1,0 +1,88 @@
+---
+title: "0 Project setup"
+author: "Alexis Rapin (alexis.rapin@epfl.ch)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+In this notebook, general variables and parameters related to this R project are set.
+
+
+```{r knitr, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r setup, eval=TRUE, collapse=TRUE}
+notebook.name <- "0-project_setup"
+
+# Load R packages
+suppressMessages(library(here)); packageVersion("here")
+suppressMessages(library(data.table)); packageVersion("data.table")
+suppressMessages(library(tidyverse)); packageVersion("tidyverse")
+```
+
+## Project-wide setup
+
+The definition of investigation variables is based on experts knowledge and consensus across the study authors. The investigation variables relate to the status of the skin barrier, genetics, delivery mode, diet, environmental factors and interventions.
+
+```{r project_setup, eval=TRUE, collapse=TRUE}
+# Define a sequencing depth threshold for quality filtering of samples
+seq.depth.thres <- 20000
+
+# Record the initial number of participating subjects
+n.init.subj <- list(day.1 = 346,
+                    month.3 = 333,
+                    month.6 = 281,
+                    month.12 = 281)
+
+# Set path to microbiome taxa sequence table
+seq.tab.fp <- here::here("data/seqtab_asv_silva138/bact_data_filtered_OTUtable.csv")
+
+# Set path to microbiome sequences annotations
+taxonomy.fp <- here::here("data/seqtab_asv_silva138/bact_data_filtered_taxtable.csv")
+
+# Set path to microbiome metadata table
+mb.metadata.fp <- here::here("data/metadata.txt")
+
+# Set path to clinical data table
+clin.tab.fp <- here::here("data/190708_Skin_microbiome.sav")
+clin.tab.2.fp <- here::here("data/microbiome_matt_outcomes_ige_flg_v01.sav")
+
+# Load the list of investigation variables
+inv.vars <- read.table(here::here("etc/investigation_variables.txt"), sep = "\t", header = T)
+
+# Set a random number generator seed
+seed <- 1988
+
+# Set figures dimension and theme
+fig.layout <- list(width.min = 30,
+                   width.single = 90,
+                   width.1.5 = 140,
+                   width.double = 180,
+                   height.max = 240,
+                   font.family = "sans",
+                   font.size = 10)
+theme <- theme_bw(base_size = fig.layout$font.size,
+                  base_family = fig.layout$font.family)
+
+# Save the project variables
+save(seq.depth.thres,
+     n.init.subj,
+     seq.tab.fp,
+     mb.metadata.fp,
+     clin.tab.fp,
+     clin.tab.2.fp,
+     inv.vars,
+     seed,
+     fig.layout,
+     theme,
+     file = here::here("etc/project_vars.RData"))
+```
+
+## Session info
+```{r, eval = T}
+sessionInfo()
+```

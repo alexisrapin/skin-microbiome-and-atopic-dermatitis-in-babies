@@ -1,0 +1,985 @@
+---
+title: "5 targeted analysis"
+author: "Alexis Rapin (alexis.rapin@epfl.ch)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+In this notebook, associations between selected skin microbiome features and selected investigation variables are assessed.
+
+```{r knitr, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r setup, eval=TRUE, collapse=TRUE}
+notebook.name <- "5-targeted_analysis"
+
+# Load R packages
+suppressMessages(library(here)); packageVersion("here")
+suppressMessages(library(tidyverse)); packageVersion("tidyverse")
+suppressMessages(library(ggpubr)); packageVersion("ggpubr")
+suppressMessages(library(gplots)); packageVersion("gplots")
+suppressMessages(library(vegan)); packageVersion("vegan")
+suppressMessages(library(FactoMineR)); packageVersion("FactoMineR")
+suppressMessages(library(factoextra)); packageVersion("factoextra")
+suppressMessages(library(pheatmap));
+suppressMessages(library(colorRamps));
+suppressMessages(library(RColorBrewer));
+suppressMessages(library(VennDiagram));
+suppressMessages(library(epitools));
+
+# Load project-specific functions
+source(here::here("lib/lib.R"))
+
+# Load project variables
+load(here::here("etc/project_vars.RData"))
+
+set.seed(seed)
+
+# Set figures theme
+theme_set(theme)
+```
+
+### Highlight striking age-associated taxa
+
+```{r, eval=F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r striking_age_associated_taxa, eval=F}
+short.list <- c("Lactobacillus iners|s15",
+                "Enhydrobacter aerosaccus|s2",
+                "Bifidobacterium|g8",
+                "Streptococcus|g3",
+                "Acinetobacter|g9",
+                "Veillonella|g5")
+
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  dplyr::filter(taxonomy %in% short.list) %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(c("taxonomy",
+                         outliers %>%
+                           filter(!outlier) %>%
+                           dplyr::select(SampleID) %>%
+                           unlist %>%
+                           as.character))) %>%
+  gather(SampleID, abundance, -taxonomy) %>%
+  left_join(data, by =  "SampleID") %>%
+  dplyr::select(SampleID, nnid, Age, Taxa = taxonomy, abundance) %>%
+  dplyr::mutate(Taxa = factor(Taxa, levels = short.list)) %>%
+  dplyr::group_by(nnid) %>%
+  dplyr::mutate(n.timepoints = n_distinct(Age)) %>%
+  ungroup %>%
+  arrange(Taxa, Age, nnid)
+
+p <- d %>%
+  dplyr::group_by(Taxa) %>%
+  # filter(abundance > 0) %>%
+  dplyr::mutate(abundance = log2(scale(abundance, center = F)+1)) %>%
+  ungroup %>%
+  dplyr::mutate(ymax = max(abundance, na.rm = T)) %>%
+  filter(n.timepoints == 4) %>%
+  {
+    ggplot(., aes(x = Age, y = abundance)) +
+      theme +
+      facet_wrap(~Taxa, nrow = 2, dir = "v") +
+      geom_jitter(size=0.5, alpha = 0.5, width = 0.2) +
+      geom_boxplot(data = filter(., abundance > 0),
+                   outlier.shape = NA, alpha = 0.75) +
+      stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(d$Age), m = 2), 2), as.vector),
+                         method = "wilcox",
+                         paired = T,
+                         label = "p.signif",
+                         hide.ns = T,
+                         p.adjust.method = "BH") +
+      labs(y = "Scaled abundance (log)") +
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+  }
+
+p.name <- "5-targeted_analysis-age_associated_taxa"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Relative abundance (rarefied, standardized and log-transformed) of selected taxa across ages. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-age_associated_taxa"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+### Compare TEWL between ages
+
+```{r, eval=F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r tewl_vs_age, eval=F}
+
+d <- data %>%
+  dplyr::select(nnid,
+                tewl_lua_mean_temp20_25_baby3mdr,
+                tewl_lua_mean_temp20_25_baby6mdr,
+                tewl_lua_mean_temp20_25_baby12mdr) %>%
+  unique %>%
+  gather("Age", "value", -nnid) %>%
+  dplyr::mutate(Age = recode_factor(Age,
+                                    tewl_lua_mean_temp20_25_baby3mdr = "3 months",
+                                    tewl_lua_mean_temp20_25_baby6mdr = "6 months",
+                                    tewl_lua_mean_temp20_25_baby12mdr = "12 months")) %>%
+  dplyr::group_by(nnid) %>%
+  drop_na() %>%
+  dplyr::mutate(n.samples = n_distinct(Age)) %>%
+  ungroup %>%
+  arrange(Age, nnid)
+
+p <- d %>%
+  filter(n.samples == 3) %>%
+  ggplot(aes(x = Age, y = log2(value+1))) +
+  theme +
+  geom_jitter(size=0.5, alpha = 0.5, width = 0.2) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.75) +
+  stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(d$Age), m = 2), 2), as.vector),
+                     method = "wilcox",
+                     paired = T,
+                     label = "p.signif",
+                     hide.ns = T,
+                     p.adjust.method = "BH") +
+  labs(y = "g/m2/h (log)") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+p.name <- "5-targeted_analysis-tewl_vs_age"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+n <- d %>% select(nnid, n.samples) %>%
+  filter(n.samples == 3) %>%
+  {.[!duplicated(.), ]} %>%
+  nrow
+
+p.legend <- paste0("TEWL across age. Statistical significance assessed with paired Wilcoxon test. Only full longitudinal sample sets are included (n=", n, "). P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001")
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-tewl_vs_age"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+
+### Assess association between specific taxa and TEWL
+
+```{r, eval = F, echo=F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r specific_taxa_vs_tewl, eval = F}
+
+selected.taxa <- c("Streptococcus|g2668",
+                   "Lactobacillaceae|f133")
+
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(c("taxonomy",
+                         outliers %>%
+                           filter(!outlier) %>%
+                           dplyr::select(SampleID) %>%
+                           unlist %>%
+                           as.character))) %>%
+  gather(SampleID, abundance, -taxonomy) %>%
+  left_join(data, by =  "SampleID") %>%
+  dplyr::select(SampleID, nnid, Age, Taxa = taxonomy, abundance,
+                `TEWL 3 months` = tewl_lua_mean_temp20_25_baby3mdr,
+                `TEWL 6 months` = tewl_lua_mean_temp20_25_baby6mdr,
+                `TEWL 12 months` = tewl_lua_mean_temp20_25_baby12mdr) %>%
+  gather("TEWL", "TEWL value",
+         `TEWL 3 months`,
+         `TEWL 6 months`,
+         `TEWL 12 months`) %>%
+  dplyr::mutate(TEWL = factor(TEWL, levels = c("TEWL 3 months",
+                                               "TEWL 6 months",
+                                               "TEWL 12 months"))) %>%
+  filter(Taxa %in% selected.taxa,
+         Age == "3 months") %>%
+  dplyr::group_by(Taxa) %>%
+  dplyr::mutate(scaled.abundance = log2(scale(abundance, center = F)+1),
+                max.scaled.abundance = max(scaled.abundance)) %>%
+  ungroup %>%
+  dplyr::mutate(Taxa = factor(Taxa, levels = selected.taxa))
+
+p <- d %>%
+  ggplot(aes(x = log2(`TEWL value`+1))) +
+  theme +
+  facet_grid(Taxa~., scales = "free") +
+  geom_density(data = filter(d, scaled.abundance > 0),
+               aes(y = ..scaled..*max(d$scaled.abundance),),
+               fill = "blue", alpha = 0.5) +
+  geom_density(data = filter(d, scaled.abundance == 0),
+               aes(y = ..scaled..*max(d$scaled.abundance)),
+               fill = "lightgray", alpha = 0.5) +
+  geom_point(aes(y = scaled.abundance), size = 1, alpha = 0.5) +
+  geom_smooth(data = filter(d, scaled.abundance > 0),
+              aes(y = scaled.abundance),
+              method = "lm",
+              formula = y ~ x,
+              na.rm = T,
+              lwd = 1,
+              color = "red") +
+  stat_cor(data = filter(d, scaled.abundance > 0),
+           aes(y = scaled.abundance),
+           method = "spearman") +
+  labs(x = "TEWL at 3 months (log)",
+       y = "Relative abundance (log)")
+
+p.name <- "5-targeted_analysis-specific_taxa_vs_tewl"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Relative abundance (rarefied, standardized, scaled and log-transformed) of taxa most associated with TEWL measured at 3 months. Linear regression as well as Spearman rank correlation coefficient (R) and associated p-value (p) shown for non-zero abundance values. Distribution density of zero and non-zero abundance values shown in gray and blue color respectively."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, "_legend.txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-specific_taxa_vs_tewl"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, "_legend.txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+### Assess the impact of delivery mode on the maturation of the skin microbiome
+
+```{r, eval = F, echo=F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r, eval = F}
+d <- mb.counts.filtered.rar.by.tax.std$Species %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(c("taxonomy",
+                         outliers %>%
+                           filter(!outlier) %>%
+                           dplyr::select(SampleID) %>%
+                           unlist %>%
+                           as.character))) %>%
+  `row.names<-`(.$taxonomy) %>%
+  dplyr::select(-taxonomy) %>%
+  t %>%
+  as.data.frame() %>%
+  dplyr::mutate(SampleID = row.names(.)) %>%
+  left_join(data %>%
+              dplyr::select(SampleID,
+                            Age),
+            by =  "SampleID") %>%
+  {
+    SampleID <- .$SampleID
+    list(community.matrix = dplyr::select(.,
+                                          -SampleID,
+                                          -Age) %>%
+           `row.names<-`(SampleID),
+         constraining.matrix = dplyr::select(.,
+                                             SampleID,
+                                             Age) %>%
+           `row.names<-`(SampleID))
+  }
+
+# Compute a constrained correspondence analysis
+cca.out.age <- cca(d$community.matrix ~ Age, d$constraining.matrix)
+saveRDS(cca.out.age, here::here("data/cca_out_age.rds"))
+```
+```{r, eval=F, echo=F}
+cca.out.age <- readRDS(here::here("data/cca_out_age.rds"))
+data <- readRDS(here::here("data/data.rds"))
+```
+```{r, eval=F}
+p <- cca.out.age$CCA$wa %>%
+  as.data.frame %>%
+  dplyr::mutate(SampleID = row.names(.)) %>%
+  left_join(data,
+            by = "SampleID") %>%
+  dplyr::group_by(Age) %>%
+  dplyr::mutate(Age.label = paste0(Age, " (n=", n_distinct(nnid), ")")) %>%
+  ungroup %>%
+  dplyr::arrange(Age) %>%
+  dplyr::mutate(Age.label = factor(Age.label, levels = unique(Age.label))) %>%
+  ggplot(aes(x = CCA1, y = CCA2, color = Age.label)) +
+  theme +
+  geom_hline(yintercept = 0, lwd = 0.75, color = "darkgrey") +
+  geom_vline(xintercept = 0, lwd = 0.75, color = "darkgrey") +
+  geom_point(size = 1.2, alpha = 0.5) +
+  stat_ellipse(lwd = 0.75)
+
+p.name <- "5-targeted_analysis-cca_age"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Constrained correspondence analysis (CCA) of the skin bacterial ASVs relative abundances across ages."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-cca_age"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+Compare delivery mode at each age.
+```{r, eval = F, echo=F}
+data <- readRDS(here::here("data/data.rds"))
+cca.out.age <- readRDS(here::here("data/cca_out_age.rds"))
+```
+```{r, eval = F}
+
+d <- cca.out.age$CCA$wa %>%
+  as.data.frame %>%
+  dplyr::mutate(SampleID = row.names(.)) %>%
+  left_join(data,
+            by = "SampleID") %>%
+  drop_na(delivery_mode) %>%
+  dplyr::group_by(nnid)
+
+p <- d %>%
+  dplyr::group_by(Age, delivery_mode) %>%
+  dplyr::mutate(n = paste0("n=", n_distinct(SampleID))) %>%
+  ungroup %>%
+  {
+    yrange <- range(.$CCA1, na.rm = T)
+    ggplot(., aes(x = delivery_mode, y = CCA1)) +
+      theme +
+      facet_grid(~Age, scales = "free_x") +
+      geom_jitter(size = 0.5, alpha = 0.5, width = 0.2) +
+      geom_boxplot(aes(fill = delivery_mode), outlier.shape = NA, alpha = 0.75) +
+      scale_fill_brewer(palette = "Spectral", direction = -1) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            axis.title.x = element_blank()) +
+      labs(fill = "Delivery mode") +
+      geom_text(data = dplyr::select(., Age, delivery_mode, n) %>%
+                  {.[!duplicated(.), ]} %>%
+                  dplyr::mutate(CCA1 = yrange[1]),
+                aes(label = n),
+                angle = 45,
+                hjust = 1,
+                vjust = 1,
+                size = 3) +
+      stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(.$delivery_mode), m = 2), 2), as.vector),
+                         label = "p.signif",
+                         method = "wilcox",
+                         hide.ns = T,
+                         p.adjust.method = "BH") +
+      stat_compare_means(label = "p.format",
+                         label.y.npc = "bottom",
+                         label.x.npc = 0.5) +
+      coord_cartesian(clip = "off")
+  }
+
+
+p.name <- "5-targeted_analysis-maturation_delivery_mode_boxplots"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Differences between the skin microbiome of subjects born through different delivery modes assessed by the comparison of the first Constrained correspondence analysis (CCA) component along age. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+
+
+# Plot regression lines
+p1 <- d %>%
+  ggplot(aes(x = Age, y = CCA1, color = delivery_mode)) +
+  theme +
+  geom_jitter(size = 0.5, alpha = 0.5, width = 0.2) +
+  geom_smooth(aes(group = delivery_mode),
+              method = "lm",
+              formula = y ~ exp(-x),
+              na.rm = T,
+              lwd = 1,
+              alpha = 0.2) +
+  scale_color_brewer(palette = "Spectral", direction = -1) +
+  theme(axis.title.x = element_blank()) +
+  labs(color = "Delivery mode")
+
+p1.name <- "5-targeted_analysis-maturation_delivery_mode_regressions"
+saveRDS(p1, here::here(paste0("figs/", p1.name, ".rds")))
+
+p1.legend <- "Maturation of the skin microbiome of subjects born through different delivery modes depicted as a fitted negative exponential curve on the first Constrained correspondence analysis (CCA) component along age."
+writeLines(p1.legend, file(here::here(paste0("figs/", p1.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-maturation_delivery_mode_boxplots"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+```{r, eval = T, echo = F}
+p1.name <- "5-targeted_analysis-maturation_delivery_mode_regressions"
+p1 <- readRDS(here::here(paste0("figs/", p1.name, ".rds")))
+p1.legend <- readLines(here::here(paste0("figs/", p1.name, ".txt")))
+```
+```{r, eval = T}
+p1
+```
+
+`r p1.legend`
+
+### Assess the impact of delivery mode on the skin microbiome diversity
+
+```{r, eval=F, echo=F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r, eval=F}
+d <- data %>%
+  # Filter samples with low richness
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          dplyr::select(SampleID) %>% unlist)) %>%
+  left_join(diversity %>%
+              filter(tax.level == "ID"),
+            by = "SampleID") %>%
+  dplyr::select(SampleID, Age, delivery_mode, richness, shannon) %>%
+  drop_na() %>%
+  gather("metric", "value", richness, shannon) %>%
+  dplyr::mutate(metric = recode_factor(metric,
+                                       richness = "Richness",
+                                       shannon = "SDI")) %>%
+  dplyr::group_by(Age, delivery_mode) %>%
+  dplyr::mutate(n = paste0("n=", n_distinct(SampleID))) %>%
+  ungroup
+
+p <- lapply(levels(d$metric), function(x){
+  d %>%
+    filter(metric == x) %>%
+    {
+      yrange <- range(.$value, na.rm = T)
+      ggplot(., aes(x = delivery_mode,
+                    y = value)) +
+        theme +
+        facet_grid(~Age, scales = "free") +
+        geom_jitter(size = 0.5, alpha = 0.5, width = 0.2) +
+        geom_violin(aes(fill = delivery_mode), draw_quantiles = c(0.25, 0.5, 0.75), alpha = 0.5) +
+        geom_text(data = dplyr::select(., Age, delivery_mode, n) %>%
+                    {.[!duplicated(.), ]} %>%
+                    dplyr::mutate(value = yrange[1]),
+                  aes(label = n),
+                  size = 3,
+                  hjust = 1,
+                  vjust = 1,
+                  angle = 45) +
+        scale_fill_brewer(palette = "Spectral", direction = -1) +
+        theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+        labs(y = x,
+             fill = "Delivery mode") +
+        stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(d$delivery_mode), m = 2), 2), as.vector),
+                           label = "p.signif",
+                           method = "wilcox",
+                           hide.ns = T,
+                           p.adjust.method = "BH") +
+        stat_compare_means(label = "p.format",
+                           label.y.npc = 0.85,
+                           label.x.npc = 0.6) +
+        coord_cartesian(clip = "off")
+    }
+  
+}) %>%
+  `names<-`(levels(d$metric))
+
+p.name <- "5-targeted_analysis-delivery_mode_diversity"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Skin bacterial diversity across age and different delivery modes shown as richness and Shannon diversity index (SDI). Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- p.name <- "5-targeted_analysis-delivery_mode_diversity"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+### Plot selected taxa associated with delivery mode.
+
+```{r, eval=F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r striking_delivery_mode_associated_taxa, eval=F}
+short.list <- c(
+  "Lactobacillus|g18",
+  "Staphylococcus|g4",
+  "Pseudomonas|g238",
+  "Streptococcus|g3"
+)
+
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  filter(taxonomy %in% short.list) %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(c("taxonomy",
+                         outliers %>%
+                           filter(!outlier) %>%
+                           dplyr::select(SampleID) %>%
+                           unlist %>%
+                           as.character))) %>%
+  gather(SampleID, abundance, -taxonomy) %>%
+  left_join(data, by =  "SampleID") %>%
+  dplyr::select(SampleID, nnid, delivery_mode, Age, Taxa = taxonomy, abundance) %>%
+  dplyr::mutate(Taxa = factor(Taxa, levels = short.list)) %>%
+  drop_na() %>%
+  dplyr::group_by(Age, Taxa, delivery_mode) %>%
+  dplyr::mutate(n = paste0("n=", n_distinct(SampleID))) %>%
+  ungroup
+
+p <- d %>%
+  dplyr::group_by(Taxa) %>%
+  dplyr::mutate(Abundance = log2(scale(abundance, center = F)+1)) %>%
+  ungroup %>%
+  filter(Age == "Day 1") %>%
+  {
+    yrange <- range(.$Abundance, na.rm = T)
+    ggplot(., aes(x = delivery_mode, y = Abundance)) +
+      theme +
+      facet_wrap(~Taxa, nrow = 1, dir = "h") +
+      geom_jitter(size=0.5, alpha = 0.5, width = 0.2) +
+      geom_boxplot(data = filter(.,
+                                 Abundance > 0),
+                   aes(fill = delivery_mode), outlier.shape = NA, alpha = 0.75) +
+      geom_text(data = dplyr::select(., Taxa, delivery_mode, n) %>%
+                  {.[!duplicated(.), ]} %>%
+                  dplyr::mutate(Abundance = yrange[1]),
+                aes(label = n),
+                size = 3,
+                hjust = 1,
+                vjust = 1,
+                angle = 45) +
+      stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(d$delivery_mode), m = 2), 2), as.vector),
+                         method = "wilcox",
+                         hide.ns = T,
+                         label = "p.signif",
+                         p.adjust.method = "BH") +
+      stat_compare_means(label = "p.format",
+                         method = "kruskal",
+                         label.y.npc = 0.9,
+                         label.x.npc = 0.5) +
+      labs(y = "Scaled abundance (log)",
+           fill = "Delivery mode") +
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+      scale_fill_brewer(palette = "Spectral", direction = -1) +
+      coord_cartesian(clip = "off")
+  }
+p.name <- "5-targeted_analysis-delivery_mode_associated_taxa_day_1"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Relative abundance (rarefied, standardized, scaled and log-transformed) of selected taxa in the first day of life. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-delivery_mode_associated_taxa_day_1"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+
+### Assess the association between TEWL and delivery mode
+
+```{r, eval=F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r tewl_vs_delivery_mode, eval=F}
+
+d <- data %>%
+  dplyr::select(nnid,
+                delivery_mode,
+                tewl_lua_mean_temp20_25_baby3mdr,
+                tewl_lua_mean_temp20_25_baby6mdr,
+                tewl_lua_mean_temp20_25_baby12mdr) %>%
+  unique %>%
+  gather("Age", "value", -nnid, -delivery_mode) %>%
+  dplyr::mutate(Age = recode_factor(Age,
+                                    tewl_lua_mean_temp20_25_baby3mdr = "3 months",
+                                    tewl_lua_mean_temp20_25_baby6mdr = "6 months",
+                                    tewl_lua_mean_temp20_25_baby12mdr = "12 months")) %>%
+  drop_na() %>%
+  dplyr::mutate(Age = factor(Age, levels = c("Day 1", levels(Age)))) %>%
+  dplyr::group_by(Age, delivery_mode) %>%
+  dplyr::mutate(n = paste0("n=", n_distinct(nnid))) %>%
+  ungroup
+
+p <- d %>%
+  {
+    yrange <- range(.$value)
+    ggplot(., aes(x = delivery_mode, y = log2(value+1))) +
+      facet_grid(~Age, drop = F) +
+      theme +
+      geom_jitter(size=0.5, alpha = 0.5, width = 0.2) +
+      geom_boxplot(aes(fill = delivery_mode),
+                   outlier.shape = NA, alpha = 0.75) +
+      geom_text(data = dplyr::select(., Age, delivery_mode, n) %>%
+                  {.[!duplicated(.), ]} %>%
+                  dplyr::mutate(value = yrange[1]),
+                aes(label = n),
+                size = 3,
+                hjust = 1,
+                vjust = 1,
+                angle = 45) +
+      stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(d$delivery_mode), m = 2), 2), as.vector),
+                         method = "wilcox",
+                         hide.ns = T,
+                         label = "p.signif",
+                         p.adjust.method = "BH") +
+      stat_compare_means(label = "p.format",
+                         method = "kruskal",
+                         label.y.npc = "bottom") +
+      labs(y = "g/m2/h (log)") +
+      theme(legend.position = "left",
+            axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+      scale_fill_brewer(palette = "Spectral", direction = -1) +
+      coord_cartesian(clip = "off")
+  }
+
+p.name <- "5-targeted_analysis-tewl_vs_delivery_mode"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "TEWL across age. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-tewl_vs_delivery_mode"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+`r p.legend`
+
+Assess differences between Emergency CS with high and low diversity.
+
+```{r, eval=F}
+data <- readRDS(here::here("data/data.rds"))
+mb.counts.filtered.rar.by.tax.std <- readRDS(here::here("data/mb_counts_filtered_rar_by_tax_std.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+diversity <- readRDS(here::here("data/diversity.rds"))
+```
+```{r c_section_high_vs_low_diversity, eval=F}
+
+d <- mb.counts.filtered.rar.by.tax.std$ID %>%
+  # Remove samples with low richness
+  dplyr::select(one_of(c("taxonomy",
+                         outliers %>%
+                           filter(!outlier) %>%
+                           dplyr::select(SampleID) %>%
+                           unlist %>%
+                           as.character))) %>%
+  gather(SampleID, abundance, -taxonomy) %>%
+  left_join(data, by =  "SampleID") %>%
+  dplyr::select(SampleID, nnid, delivery_mode, Age,
+                tewl_lua_mean_temp20_25_baby3mdr,
+                Taxa = taxonomy, abundance) %>%
+  filter(Age == "Day 1") %>%
+  left_join(diversity %>%
+              filter(tax.level == "ID"),
+            by = "SampleID") %>%
+  dplyr::mutate(diversity.categ = ifelse(shannon >= 2,
+                                         "high",
+                                         "low")) %>%
+  {.[!duplicated(.), ]} %>%
+  dplyr::group_by(delivery_mode) %>%
+  dplyr::mutate(n = paste0("n=", n_distinct(nnid))) %>%
+  ungroup
+
+p <- d %>%
+  select(nnid, delivery_mode, tewl_lua_mean_temp20_25_baby3mdr, shannon, n) %>%
+  {.[!duplicated(.), ]} %>%
+  {
+    xrange <- range(.$tewl_lua_mean_temp20_25_baby3mdr, na.rm = T)
+    yrange <- range(.$shannon, na.rm = T)
+    ggplot(., aes(x = log2(tewl_lua_mean_temp20_25_baby3mdr+1),
+                  y = log2(shannon+1))) +
+      theme +
+      facet_grid(~delivery_mode, scales = "free") +
+      geom_point(alpha = 0.5) +
+      geom_smooth(method = "lm",
+                  formula = y ~ x,
+                  na.rm = T,
+                  lwd = 1,
+                  color = "red") +
+      stat_cor(method = "kendall") +
+      geom_text(data = dplyr::group_by(., delivery_mode, n) %>%
+                  dplyr::summarise(tewl_lua_mean_temp20_25_baby3mdr = min(tewl_lua_mean_temp20_25_baby3mdr, na.rm = T),
+                                   shannon = min(shannon, na.rm = T)),
+                aes(label = n),
+                size = 3) +
+      labs(x = "TEWL (g/m2/h) (log)",
+           y = "SDI") +
+      coord_cartesian(clip = "off")
+  }
+
+p.name <- "5-targeted_analysis-delivery_mode_tewl_vs_shannon"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "TEWL at 3 months and Shannon diversity index (SDI) at day 1. Association assessed by the Kendall rank correlation coefficient."
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-delivery_mode_tewl_vs_shannon"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+### Assess association between allergy and skin microbiome at available time points
+
+```{r, eval = F}
+data.prepared.associations <- readRDS(here::here("data/data_prepared_associations.rds"))
+mb.data.prepared.associations <- readRDS(here::here("data/mb_data_prepared_associations.rds"))
+```
+```{r, eval = F}
+vars <- c("ald_as_spt_pos_anyintfood_36m")
+
+adonis.out.vars.targeted <- lapply(vars, function(x){
+  # x <- vars[1]
+  
+  d <- mb.data.prepared.associations %>%
+    left_join(data.prepared.associations %>%
+                dplyr::select(one_of("SampleID", "nnid", "Age", x)),
+              by = "SampleID") %>%
+    {
+      selected.sampleid <- dplyr::select(., "SampleID", "nnid", "Age", one_of(x)) %>%
+        gather(Variable, label, -Age, -SampleID, -nnid) %>%
+        dplyr::group_by(Age, Variable, label) %>%
+        dplyr::mutate(n = n_distinct(nnid)) %>%
+        ungroup %>%
+        drop_na %>%
+        dplyr::group_by(Age, Variable) %>%
+        dplyr::mutate(n.min = min(n)) %>%
+        ungroup %>%
+        filter(n.min >= 5) %>%
+        {.$SampleID}
+      
+      dplyr::filter(.,
+                    SampleID %in% selected.sampleid)
+      
+    }
+  
+  lapply(levels(d$Age), function(y){
+    
+    d1 <- filter(d, Age == y) %>%
+      dplyr::select(-Age, -nnid) %>%
+      drop_na()
+    
+    if(nrow(d1) > 0){
+      
+      values <- dplyr::select(d1, -one_of("SampleID",
+                                          x)) %>%
+        {.[, colSums(.) != 0]}
+      
+      labels <- dplyr::select(d1, one_of("SampleID",
+                                         x))
+      
+      f <- paste0("values ~ `", x, "`") %>%
+        as.formula()
+      
+      adonis(f,
+             data = labels,
+             method = "bray",
+             permutations = 10000)$aov.tab %>%
+        as.data.frame %>%
+        mutate(Term = row.names(.),
+               Age = y,
+               Variable = x)
+      
+    }
+  }) %>%
+    bind_rows
+}) %>%
+  bind_rows
+
+saveRDS(adonis.out.vars.targeted, here::here("data/adonis_out_vars_tageted.rds"))
+```
+
+#### Allergy vs TEWL
+
+```{r, eval=F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+```
+```{r allergy_vs_TEWL, eval=F}
+
+d <- data %>%
+  dplyr::select(nnid,
+                ald_as_spt_pos_anyintfood_36m,
+                tewl_lua_mean_temp20_25_baby3mdr,
+                tewl_lua_mean_temp20_25_baby6mdr,
+                tewl_lua_mean_temp20_25_baby12mdr) %>%
+  unique %>%
+  gather("Age", "value", -nnid, -ald_as_spt_pos_anyintfood_36m) %>%
+  dplyr::mutate(Age = recode_factor(Age,
+                                    tewl_lua_mean_temp20_25_baby3mdr = "3 months",
+                                    tewl_lua_mean_temp20_25_baby6mdr = "6 months",
+                                    tewl_lua_mean_temp20_25_baby12mdr = "12 months")) %>%
+  drop_na() %>%
+  dplyr::mutate(Age = factor(Age, levels = c("Day 1", levels(Age)))) %>%
+  dplyr::group_by(Age, ald_as_spt_pos_anyintfood_36m) %>%
+  dplyr::mutate(n = paste0("n=", n_distinct(nnid))) %>%
+  ungroup
+
+p <- d %>%
+  {
+    yrange <- range(.$value)
+    ggplot(., aes(x = ald_as_spt_pos_anyintfood_36m, y = log2(value+1))) +
+      facet_grid(~Age, drop = F) +
+      theme +
+      geom_jitter(size=0.5, alpha = 0.5, width = 0.2) +
+      geom_boxplot(aes(group = ald_as_spt_pos_anyintfood_36m),
+                   outlier.shape = NA, alpha = 0.75) +
+      geom_text(data = dplyr::select(., Age, ald_as_spt_pos_anyintfood_36m, n) %>%
+                  {.[!duplicated(.), ]} %>%
+                  dplyr::mutate(value = yrange[1]),
+                aes(label = n),
+                size = 3,
+                hjust = 1,
+                vjust = 1,
+                angle = 45) +
+      stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(d$ald_as_spt_pos_anyintfood_36m), m = 2), 2), as.vector),
+                         method = "wilcox",
+                         hide.ns = T,
+                         label = "p.signif",
+                         p.adjust.method = "BH") +
+      stat_compare_means(label = "p.format",
+                         method = "kruskal",
+                         label.y.npc = "bottom") +
+      labs(y = "g/m2/h (log)") +
+      theme(legend.position = "left",
+            axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+      scale_fill_brewer(palette = "Spectral", direction = -1) +
+      coord_cartesian(clip = "off")
+  }
+
+p.name <- "5-targeted_analysis-tewl_vs_allergy"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "TEWL across age. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-tewl_vs_allergy"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+
+#### Allergy vs diversity
+
+```{r, eval=F, echo=F}
+data <- readRDS(here::here("data/data.rds"))
+outliers <- readRDS(here::here("data/outliers.rds"))
+diversity <- readRDS(here::here("data/diversity.rds"))
+```
+```{r allergy_vs_diversity, eval=F}
+
+d <- diversity %>%
+  filter(SampleID %in% (outliers %>%
+                          filter(!outlier) %>%
+                          {.$SampleID}),
+         tax.level == "ID") %>%
+  dplyr::select(SampleID, richness, shannon) %>%
+  left_join(dplyr::select(data, SampleID, nnid, Age, Allergy = ald_as_spt_pos_anyintfood_36m)) %>%
+  gather(Diversity, value, richness, shannon) %>%
+  drop_na() %>%
+  dplyr::group_by(Diversity, Age, Allergy) %>%
+  dplyr::mutate(n = n_distinct(nnid)) %>%
+  ungroup
+
+p <- d %>%
+  {
+    yrange <- range(.$value)
+    ggplot(., aes(x = Allergy, y = value)) +
+      facet_grid(Diversity~Age, drop = F, scales = "free_y") +
+      theme +
+      geom_jitter(size=0.5, alpha = 0.5, width = 0.2) +
+      geom_violin(aes(group = Allergy), draw_quantiles = c(0.25, 0.5, 0.75), alpha = 0.5) +
+      geom_text(data = dplyr::select(., Age, Allergy, n) %>%
+                  {.[!duplicated(.), ]} %>%
+                  dplyr::mutate(value = yrange[1]),
+                aes(label = n),
+                size = 3,
+                hjust = 1,
+                vjust = 1,
+                angle = 45) +
+      stat_compare_means(comparisons = lapply(plyr::alply(combn(x = unique(d$Allergy), m = 2), 2), as.vector),
+                         method = "wilcox",
+                         hide.ns = T,
+                         label = "p.signif",
+                         p.adjust.method = "BH") +
+      stat_compare_means(label = "p.format",
+                         method = "kruskal",
+                         label.y.npc = "bottom") +
+      labs(y = "Value") +
+      theme(legend.position = "left",
+            axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+      scale_fill_brewer(palette = "Spectral", direction = -1) +
+      coord_cartesian(clip = "off")
+  }
+
+p.name <- "5-targeted_analysis-diversity_vs_allergy"
+saveRDS(p, here::here(paste0("figs/", p.name, ".rds")))
+
+p.legend <- "Skin bacterial diversity across age. Statistical significance assessed with the Kruskall-Wallis test and post-hoc Wilcoxon test. P values were adjusted for multiple comparisons using the Benjamini and Hochberg method. ns : p > 0.05, * : p <= 0.05, ** : p <= 0.01, *** : p <= 0.001, **** : p <= 0.0001"
+writeLines(p.legend, file(here::here(paste0("figs/", p.name, ".txt"))))
+```
+```{r, eval = T, echo = F}
+p.name <- "5-targeted_analysis-diversity_vs_allergy"
+p <- readRDS(here::here(paste0("figs/", p.name, ".rds")))
+p.legend <- readLines(here::here(paste0("figs/", p.name, ".txt")))
+```
+```{r, eval = T}
+p
+```
+
+## Session info
+```{r, eval = T}
+sessionInfo()
+```
