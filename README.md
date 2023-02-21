@@ -8,7 +8,7 @@
 
 ## Description
 
-This R project is an archive of the code used in the data analysis associated with the study entitled "The skin microbiome in the first year of life and its association with atopic dermatitis" (In press, Allergy, 2023). It does not contain any input nor output data used in the analysis.
+This R project is an archive of the code used in the data analysis associated with the study entitled ["The skin microbiome in the first year of life and its association with atopic dermatitis" (Rapin, Rehbinder, et al. 2023, Allergy, doi:10.1111/all.15671)](https://doi.org/10.1111/all.15671) [1]. It does not contain any input nor output data used in the analysis.
 
 The study assesses the association between the skin microbiome and AD, skin barrier integrity and allergic diseases in the first year of life. It further explores the evolution of the skin microbiome with age and its possible determinants, including delivery mode.
 
@@ -20,7 +20,7 @@ The computation was performed within the [Service for Sensitive Data (TSD)](http
 
 ## Resources
 
-- Raw bacterial 16S rRNA gene amplicons sequences used in this project are available on the European Nucleotide Archive database under accession number PRJEB42268.
+- Raw bacterial 16S rRNA gene amplicons sequences used in this project are available on the European Nucleotide Archive database under accession number [PRJEB42268](https://www.ebi.ac.uk/ena/browser/view/PRJEB42268).
 - PreventADALL clinical trial NCT record: https://clinicaltrials.gov/ct2/show/NCT02449850.
 
 ## Get this project
@@ -50,3 +50,6 @@ $ git clone https://github.com/alexisrapin/skin-microbiome-and-atopic-dermatitis
 └── notebooks      R notebooks
 </pre>
 
+## References
+
+1. Rapin, A., Rehbinder, E.M., Macowan, M., Pattaroni, C., Carlsen, K.C.L., Harris, N.L., Jonassen, C.M., Landrø, L., Lossius, A.H., Nordlund, B., Rudi, K., Skjerven, H.O., Staff, A.C., Söderhäll, C., Ubags, N., Vettukattil, R. and Marsland, B.J. (2023), The skin microbiome in the first year of life and its association with atopic dermatitis. Allergy. Accepted Author Manuscript. https://doi.org/10.1111/all.15671
