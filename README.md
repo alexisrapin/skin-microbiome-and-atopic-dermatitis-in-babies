@@ -2,6 +2,8 @@
 
 <a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by/4.0/88x31.png" /></a><br />This work is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International License</a>.
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.7660269.svg)](https://doi.org/10.5281/zenodo.7660269)
+
 © Copyright 2022 Alexis Rapin
 
 **Authors:** Alexis Rapin (https://orcid.org/0000-0003-3448-5459), Matthew Macowan (https://orcid.org/0000-0001-7721-1349), Eva Maria Rehbinder (https://orcid.org/0000-0002-1796-0433)
